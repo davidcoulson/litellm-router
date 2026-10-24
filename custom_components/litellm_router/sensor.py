@@ -123,6 +123,19 @@ class BackendSensor(BackendEntity[MetricsCoordinator], SensorEntity):
         super().__init__(coordinator, entry, model_id, description.key)
         self.entity_description = description
 
+    async def async_added_to_hass(self) -> None:
+        """Also follow backend membership from the health coordinator."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._entry.runtime_data.health.async_add_listener(self.async_write_ha_state)
+        )
+
+    @property
+    def available(self) -> bool:
+        """Unavailable while the proxy is down or the backend is gone."""
+        data = self._entry.runtime_data.health.data
+        return super().available and data.reachable and self.model_id in data.backends
+
     @property
     def native_value(self) -> float | None:
         """Return the value (counters read 0 until the backend serves traffic)."""

@@ -122,3 +122,27 @@ def test_ambiguous_group_resolution_skipped() -> None:
         topo=topo,
     )
     assert d.backends == {}
+
+
+def test_extra_labels_do_not_collide() -> None:
+    p = MetricsProcessor()
+    a = req(LOCAL, "qwen-local", 10).replace("client_ip=", 'hashed_api_key="k1",client_ip=')
+    b = req(LOCAL, "qwen-local", 20).replace("client_ip=", 'hashed_api_key="k2",client_ip=')
+    for _ in range(3):
+        d = poll(p, a, b)
+        assert d.backends[LOCAL].requests == 30
+        assert d.clients == {"10.0.0.9": 30}
+    assert d.active_backend == "idle"
+
+
+def test_fallback_history_survives_topology_changes() -> None:
+    p = MetricsProcessor()
+    line = lambda v: req(FALLBACK, "qwen-local", v)  # noqa: E731
+    assert poll(p, line(10)).fallback_requests == 10
+    # backend removed from topology: history is kept, new traffic unclassified
+    assert poll(p, line(12), topo=Topology()).fallback_requests == 10
+    # restored: only the new delta is classified
+    assert poll(p, line(15)).fallback_requests == 13
+    # fallback config lost: unknown targets -> any requested != served counts, never decreases
+    no_cfg = Topology(TOPO.models)
+    assert poll(p, line(16), topo=no_cfg).fallback_requests == 14

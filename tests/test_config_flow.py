@@ -76,3 +76,30 @@ async def test_options(hass, aioclient_mock, entry) -> None:
     # reopening shows the stored values
     r = await hass.config_entries.options.async_init(entry.entry_id)
     assert r["type"] is FlowResultType.FORM
+
+
+async def test_reconfigure(hass, aioclient_mock, entry) -> None:
+    entry.add_to_hass(hass)
+    mock_proxy(aioclient_mock)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    r = await entry.start_reconfigure_flow(hass)
+    assert r["step_id"] == "reconfigure"
+    new = "http://new.test:4000"
+
+    def register(metrics_status=200):
+        aioclient_mock.clear_requests()
+        aioclient_mock.get(f"{new}/health/liveliness", text="ok")
+        aioclient_mock.get(f"{new}/metrics/", status=metrics_status, text="")
+        aioclient_mock.get(f"{new}/health", json={})
+        aioclient_mock.get(f"{new}/model/info", json={})
+        aioclient_mock.get(f"{new}/router/settings", json={})
+
+    register(500)
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {"url": new})
+    assert r["errors"] == {"base": "cannot_connect"}
+    register()
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {"url": "new.test:4000/"})
+    assert r["type"] is FlowResultType.ABORT and r["reason"] == "reconfigure_successful"
+    assert entry.data == {"url": new, "api_key": API_KEY}
+    assert entry.unique_id == URL
+    await hass.async_block_till_done()

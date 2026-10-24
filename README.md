@@ -20,6 +20,8 @@ Then Settings > Devices & services > Add integration > **LiteLLM Router**, and e
 (for example `http://10.2.6.57:4000`) and the API key. The key is validated against `/health/liveliness` and
 `/metrics/`. If the key is later rejected, Home Assistant starts a re-authentication flow.
 
+To change the URL or key later, use Reconfigure on the integration (leave the key empty to keep it).
+
 Options (Configure on the integration): health poll interval (default 60 s) and metrics poll interval (default 30 s).
 `/health` makes a live call to each backend, so it is polled separately and less often.
 

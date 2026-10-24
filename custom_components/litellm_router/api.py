@@ -164,9 +164,9 @@ class LiteLLMClient:
         """Return configured deployments."""
         return parse_model_info(await self._get_json("/model/info"))
 
-    async def fallbacks(self) -> dict[str, list[str]]:
-        """Return configured fallbacks (empty when unavailable)."""
+    async def fallbacks(self) -> dict[str, list[str]] | None:
+        """Return configured fallbacks, or None when unavailable."""
         try:
             return parse_fallbacks(await self._get_json("/router/settings"))
         except LiteLLMConnectionError:
-            return {}
+            return None

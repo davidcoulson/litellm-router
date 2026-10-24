@@ -84,4 +84,4 @@ async def test_bad_json_and_fallbacks_degrade(hass, aioclient_mock) -> None:
         await c.health()
     with pytest.raises(LiteLLMConnectionError):
         await c.model_info()
-    assert await c.fallbacks() == {}
+    assert await c.fallbacks() is None

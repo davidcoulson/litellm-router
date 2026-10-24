@@ -178,3 +178,42 @@ async def test_metrics_failures(hass, aioclient_mock, entry) -> None:
     await advance(hass, 31)
     assert not entry.runtime_data.metrics.last_update_success
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_settings_outage_keeps_fallbacks_and_backend_membership(
+    hass, aioclient_mock, entry
+) -> None:
+    mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 1)))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ent = er.async_get(hass)
+    health = entry.runtime_data.health
+    assert health.data.topology.fallbacks == {"qwen-local": ["qwen-fallback"]}
+
+    mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 1)), router={"status": 500})
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert health.data.topology.fallbacks == {"qwen-local": ["qwen-fallback"]}
+
+    # backend vanishes from /health and /model/info while metrics keep working
+    mock_proxy(
+        aioclient_mock,
+        metrics_text(req(LOCAL, "qwen-local", 1)),
+        health={
+            **HEALTH,
+            "healthy_endpoints": HEALTH["healthy_endpoints"][1:],
+            "unhealthy_endpoints": [],
+        },
+        model_info={"json": {"data": []}},
+    )
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "unavailable"
+    assert state_of(hass, ent, entry, f"{FALLBACK}_requests").state != "unavailable"
+
+    # it returns and resumes with its accumulated counters
+    mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 3)))
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "3"

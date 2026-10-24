@@ -77,6 +77,8 @@ class MetricsProcessor:
         self._latency: dict[str, float] = {}
         self._ttft: dict[str, float] = {}
         self._last_active: str | None = None
+        self._fallback_total = 0.0
+        self._client: dict[tuple, str] = {}
 
     def _resolve(self, labels: dict[str, str], topology: Topology) -> str | None:
         """Return the backend model_id a sample belongs to, if any."""
@@ -91,6 +93,7 @@ class MetricsProcessor:
     def process(self, samples: list[Sample], topology: Topology) -> MetricsData:
         """Update state from samples and return the current data."""
         acc = self._acc
+        targets = topology.fallback_targets
         served_delta: dict[str, float] = defaultdict(float)
         sums: dict[str, float] = defaultdict(float)
         counts: dict[str, float] = defaultdict(float)
@@ -107,18 +110,16 @@ class MetricsProcessor:
             if s.name == REQUESTS:
                 if not _served(lb) or not lb.get("model_id"):
                     continue
-                client = lb.get("client_ip", "None")
-                key = (
-                    s.name,
-                    model_id,
-                    lb.get("requested_model", ""),
-                    client,
-                    lb.get("status_code", ""),
-                    lb.get("route", ""),
-                    lb.get("user_agent", ""),
-                )
+                key = (s.name, model_id, *sorted(lb.items()))
+                self._client[key] = lb.get("client_ip", "None")
+                before = acc.total(key)
                 delta = acc.update(key, s.value)
                 served_delta[model_id] += delta
+                added = acc.total(key) - before
+                info = topology.models.get(model_id)
+                group, requested = (info.name if info else ""), lb.get("requested_model", "")
+                if requested and group and requested != group and (not targets or group in targets):
+                    self._fallback_total += added
                 continue
             key = (s.name, model_id, *sorted(lb.items()))
             delta = acc.update(key, s.value)
@@ -146,19 +147,13 @@ class MetricsProcessor:
         data = MetricsData()
         totals: dict[str, BackendStats] = defaultdict(BackendStats)
         clients: dict[str, float] = defaultdict(float)
-        targets = topology.fallback_targets
-        fallbacks = 0.0
         for key in acc.series():
             name, model_id = key[0], key[1]
             stats = totals[model_id]
             value = acc.total(key)
             if name == REQUESTS:
                 stats.requests += value
-                clients[key[3]] += value
-                info = topology.models.get(model_id)
-                group, requested = (info.name if info else ""), key[2]
-                if requested and group and requested != group and (not targets or group in targets):
-                    fallbacks += value
+                clients[self._client[key]] += value
             elif name == FAILURES:
                 stats.failures += value
             elif name == TOKENS_IN:
@@ -170,7 +165,7 @@ class MetricsProcessor:
             stats.avg_ttft = self._ttft.get(model_id)
         data.backends = dict(totals)
         data.clients = {c: v for c, v in clients.items() if c not in ("None", "")}
-        data.fallback_requests = fallbacks
+        data.fallback_requests = self._fallback_total
         if served_delta:
             best = max(served_delta, key=lambda m: served_delta[m])
             if served_delta[best] > 0:

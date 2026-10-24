@@ -95,6 +95,29 @@ class LiteLLMRouterConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change the proxy URL and, optionally, the API key."""
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            url = normalize_url(user_input[CONF_URL])
+            api_key = user_input.get(CONF_API_KEY) or entry.data[CONF_API_KEY]
+            if error := await _validate(self.hass, url, api_key):
+                errors["base"] = error
+            else:
+                return self.async_update_reload_and_abort(
+                    entry, data_updates={CONF_URL: url, CONF_API_KEY: api_key}
+                )
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_URL, default=entry.data[CONF_URL]): str,
+                vol.Optional(CONF_API_KEY): str,
+            }
+        )
+        return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
+
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:

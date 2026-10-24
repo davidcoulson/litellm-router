@@ -60,6 +60,7 @@ class HealthCoordinator(DataUpdateCoordinator[HealthData]):
             update_interval=health_interval(entry.options),
         )
         self.client = client
+        self._fallbacks: dict[str, list[str]] = {}
 
     async def _async_update_data(self) -> HealthData:
         try:
@@ -77,7 +78,9 @@ class HealthCoordinator(DataUpdateCoordinator[HealthData]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except LiteLLMConnectionError as err:
             raise UpdateFailed(f"Error talking to LiteLLM: {err}") from err
-        return HealthData(True, health, Topology(models, fallbacks))
+        if fallbacks is not None:  # keep the last good config through /router/settings outages
+            self._fallbacks = fallbacks
+        return HealthData(True, health, Topology(models, self._fallbacks))
 
     def _previous_topology(self) -> Topology:
         return self.data.topology if self.data else Topology()
