@@ -80,6 +80,7 @@ class MetricsProcessor:
         self._fallback_total = 0.0
         self._client: dict[tuple, str] = {}
         self._classified: dict[tuple, float] = {}
+        self._attr: dict[tuple[str, str], float] = defaultdict(float)
         self._req_meta: dict[tuple, tuple[str, str]] = {}
 
     def _resolve(self, labels: dict[str, str], topology: Topology) -> str | None:
@@ -107,6 +108,13 @@ class MetricsProcessor:
         if requested and requested != info.name and (not targets or info.name in targets):
             self._fallback_total += pending
 
+    def _ingest(self, key: tuple, model_id: str, sample: Sample) -> float:
+        """Update the source counter (identity: name + labels) and attribute its growth."""
+        before = self._acc.total(key)
+        delta = self._acc.update(key, sample.value)
+        self._attr[(sample.name, model_id)] += self._acc.total(key) - before
+        return delta
+
     def process(self, samples: list[Sample], topology: Topology) -> MetricsData:
         """Update state from samples and return the current data."""
         acc = self._acc
@@ -126,14 +134,14 @@ class MetricsProcessor:
             if s.name == REQUESTS:
                 if not _served(lb) or not lb.get("model_id"):
                     continue
-                key = (s.name, model_id, *sorted(lb.items()))
+                key = (s.name, *sorted(lb.items()))
                 self._client[key] = lb.get("client_ip", "None")
-                delta = acc.update(key, s.value)
+                delta = self._ingest(key, model_id, s)
                 served_delta[model_id] += delta
                 self._req_meta[key] = (model_id, lb.get("requested_model", ""))
                 continue
-            key = (s.name, model_id, *sorted(lb.items()))
-            delta = acc.update(key, s.value)
+            key = (s.name, *sorted(lb.items()))
+            delta = self._ingest(key, model_id, s)
             if s.name == LATENCY_SUM:
                 sums[model_id] += delta
             elif s.name == LATENCY_COUNT:
@@ -160,19 +168,20 @@ class MetricsProcessor:
         data = MetricsData()
         totals: dict[str, BackendStats] = defaultdict(BackendStats)
         clients: dict[str, float] = defaultdict(float)
+        fields = {
+            REQUESTS: "requests",
+            FAILURES: "failures",
+            TOKENS_IN: "tokens_in",
+            TOKENS_OUT: "tokens_out",
+        }
+        for (name, model_id), value in self._attr.items():
+            if name in fields:
+                setattr(
+                    totals[model_id], fields[name], getattr(totals[model_id], fields[name]) + value
+                )
         for key in acc.series():
-            name, model_id = key[0], key[1]
-            stats = totals[model_id]
-            value = acc.total(key)
-            if name == REQUESTS:
-                stats.requests += value
-                clients[self._client[key]] += value
-            elif name == FAILURES:
-                stats.failures += value
-            elif name == TOKENS_IN:
-                stats.tokens_in += value
-            elif name == TOKENS_OUT:
-                stats.tokens_out += value
+            if key[0] == REQUESTS:
+                clients[self._client[key]] += acc.total(key)
         for model_id, stats in totals.items():
             stats.avg_latency = self._latency.get(model_id)
             stats.avg_ttft = self._ttft.get(model_id)

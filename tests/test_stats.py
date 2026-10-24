@@ -2,7 +2,7 @@
 
 from custom_components.litellm_router.api import ModelInfo, Topology
 from custom_components.litellm_router.prometheus import parse_prometheus
-from custom_components.litellm_router.stats import MetricsProcessor, backend_name
+from custom_components.litellm_router.stats import BackendStats, MetricsProcessor, backend_name
 
 from .conftest import FALLBACK, FAST, LOCAL, metric, metrics_text, req
 
@@ -167,3 +167,19 @@ def test_pending_series_recovered_after_series_disappears() -> None:
     assert poll(p).fallback_requests == 14  # topology back, series absent
     assert poll(p).fallback_requests == 14  # exactly once
     assert poll(p, other).fallback_requests == 14
+
+
+def test_failure_attribution_does_not_double_count_on_deployment_swap() -> None:
+    p = MetricsProcessor()
+    fail = lambda v: metric(
+        "litellm_proxy_failed_requests_metric_total", "", v, requested_model="g"
+    )  # noqa: E731
+    topo_a = Topology({LOCAL: ModelInfo(LOCAL, "g")})
+    topo_b = Topology({FAST: ModelInfo(FAST, "g")})
+    d = poll(p, fail(10), topo=topo_a)
+    assert d.backends[LOCAL].failures == 10
+    d = poll(p, fail(10), topo=topo_b)  # counter unchanged
+    assert d.backends[LOCAL].failures == 10
+    assert d.backends.get(FAST, BackendStats()).failures == 0
+    d = poll(p, fail(12), topo=topo_b)  # only the growth goes to B
+    assert d.backends[LOCAL].failures == 10 and d.backends[FAST].failures == 2
