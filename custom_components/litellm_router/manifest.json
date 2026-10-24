@@ -1,0 +1,12 @@
+{
+  "domain": "litellm_router",
+  "name": "LiteLLM Router",
+  "codeowners": ["@davidcoulson"],
+  "config_flow": true,
+  "documentation": "https://github.com/davidcoulson/litellm-router",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/davidcoulson/litellm-router/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

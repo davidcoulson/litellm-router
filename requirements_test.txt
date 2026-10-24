@@ -1,0 +1,2 @@
+pytest-homeassistant-custom-component
+pycares<4.9

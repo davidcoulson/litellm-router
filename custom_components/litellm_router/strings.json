@@ -1,0 +1,56 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to LiteLLM",
+        "description": "Enter the base URL of your LiteLLM proxy and an API key that may read /health and /metrics.",
+        "data": { "url": "URL", "api_key": "API key" },
+        "data_description": { "url": "For example http://10.0.0.5:4000" }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "The API key for {url} was rejected. Enter a new one.",
+        "data": { "api_key": "API key" }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect. Check the URL and that /metrics is enabled (callbacks: [\"prometheus\"]).",
+      "invalid_auth": "The API key was rejected."
+    },
+    "abort": {
+      "already_configured": "This proxy is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Polling",
+        "data": {
+          "health_interval": "Health poll interval (seconds)",
+          "metrics_interval": "Metrics poll interval (seconds)"
+        },
+        "data_description": {
+          "health_interval": "/health makes a live call to every backend; keep this at 30 seconds or more."
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "proxy_reachable": { "name": "Proxy reachable" },
+      "healthy": { "name": "Healthy" }
+    },
+    "sensor": {
+      "active_backend": { "name": "Active backend" },
+      "fallback_requests": { "name": "Fallback requests" },
+      "requests_by_client": { "name": "Requests by client" },
+      "requests": { "name": "Requests served" },
+      "failures": { "name": "Failures" },
+      "tokens_in": { "name": "Tokens in" },
+      "tokens_out": { "name": "Tokens out" },
+      "avg_latency": { "name": "Average API latency" },
+      "avg_ttft": { "name": "Average time to first token" }
+    }
+  }
+}
