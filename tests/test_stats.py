@@ -139,10 +139,20 @@ def test_fallback_history_survives_topology_changes() -> None:
     p = MetricsProcessor()
     line = lambda v: req(FALLBACK, "qwen-local", v)  # noqa: E731
     assert poll(p, line(10)).fallback_requests == 10
-    # backend removed from topology: history is kept, new traffic unclassified
+    # backend removed from topology: history is kept, new traffic stays pending
     assert poll(p, line(12), topo=Topology()).fallback_requests == 10
-    # restored: only the new delta is classified
-    assert poll(p, line(15)).fallback_requests == 13
+    # restored: the pending amount is classified once, plus the new delta
+    assert poll(p, line(15)).fallback_requests == 15
     # fallback config lost: unknown targets -> any requested != served counts, never decreases
     no_cfg = Topology(TOPO.models)
-    assert poll(p, line(16), topo=no_cfg).fallback_requests == 14
+    assert poll(p, line(16), topo=no_cfg).fallback_requests == 16
+
+
+def test_degraded_startup_recovers_fallbacks_once() -> None:
+    p = MetricsProcessor()
+    line = lambda v: req(FALLBACK, "qwen-local", v)  # noqa: E731
+    assert poll(p, line(12), topo=Topology()).fallback_requests == 0
+    assert poll(p, line(12), topo=Topology()).fallback_requests == 0
+    assert poll(p, line(12)).fallback_requests == 12  # recovered
+    assert poll(p, line(12)).fallback_requests == 12  # not counted twice
+    assert poll(p, line(13)).fallback_requests == 13

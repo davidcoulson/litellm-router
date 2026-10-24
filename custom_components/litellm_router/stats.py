@@ -79,6 +79,7 @@ class MetricsProcessor:
         self._last_active: str | None = None
         self._fallback_total = 0.0
         self._client: dict[tuple, str] = {}
+        self._classified: dict[tuple, float] = {}
 
     def _resolve(self, labels: dict[str, str], topology: Topology) -> str | None:
         """Return the backend model_id a sample belongs to, if any."""
@@ -90,10 +91,24 @@ class MetricsProcessor:
         ids = [m.model_id for m in topology.models.values() if m.name == group]
         return ids[0] if len(ids) == 1 else None
 
+    def _classify(self, key: tuple, model_id: str, requested: str, topology: Topology) -> None:
+        """Classify not-yet-classified requests of a series, exactly once.
+
+        Amounts seen while the backend is unknown to the topology (e.g. a failed
+        /model/info at startup) stay pending and are classified when it is known.
+        """
+        info = topology.models.get(model_id)
+        if info is None:
+            return
+        pending = self._acc.total(key) - self._classified.get(key, 0.0)
+        self._classified[key] = self._acc.total(key)
+        targets = topology.fallback_targets
+        if requested and requested != info.name and (not targets or info.name in targets):
+            self._fallback_total += pending
+
     def process(self, samples: list[Sample], topology: Topology) -> MetricsData:
         """Update state from samples and return the current data."""
         acc = self._acc
-        targets = topology.fallback_targets
         served_delta: dict[str, float] = defaultdict(float)
         sums: dict[str, float] = defaultdict(float)
         counts: dict[str, float] = defaultdict(float)
@@ -112,14 +127,9 @@ class MetricsProcessor:
                     continue
                 key = (s.name, model_id, *sorted(lb.items()))
                 self._client[key] = lb.get("client_ip", "None")
-                before = acc.total(key)
                 delta = acc.update(key, s.value)
                 served_delta[model_id] += delta
-                added = acc.total(key) - before
-                info = topology.models.get(model_id)
-                group, requested = (info.name if info else ""), lb.get("requested_model", "")
-                if requested and group and requested != group and (not targets or group in targets):
-                    self._fallback_total += added
+                self._classify(key, model_id, lb.get("requested_model", ""), topology)
                 continue
             key = (s.name, model_id, *sorted(lb.items()))
             delta = acc.update(key, s.value)
