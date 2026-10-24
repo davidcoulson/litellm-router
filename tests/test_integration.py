@@ -143,7 +143,7 @@ async def test_new_backend_added_and_proxy_outage(hass, aioclient_mock, entry) -
 
 
 async def test_setup_not_ready_and_auth_failure(hass, aioclient_mock, entry) -> None:
-    mock_proxy(aioclient_mock, health_ep={"status": 500})
+    mock_proxy(aioclient_mock, metrics_status=500)
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
     assert entry.state is ConfigEntryState.SETUP_RETRY
@@ -244,3 +244,23 @@ async def test_liveliness_ok_while_health_times_out(hass, aioclient_mock, entry)
     await advance(hass, 65)
     await hass.async_block_till_done(wait_background_tasks=True)
     assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == "on"
+
+
+async def test_setup_with_health_timing_out(hass, aioclient_mock, entry) -> None:
+    mock_proxy(
+        aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 4)), health_ep={"exc": TimeoutError()}
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert entry.state is ConfigEntryState.LOADED
+    ent = er.async_get(hass)
+    assert state_of(hass, ent, entry, "proxy_reachable").state == "on"
+    assert state_of(hass, ent, entry, "active_backend").state == "idle"
+
+    # health recovers: backends appear
+    mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 4)))
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == "on"
+    assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "4"

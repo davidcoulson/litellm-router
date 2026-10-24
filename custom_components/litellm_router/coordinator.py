@@ -79,8 +79,7 @@ class HealthCoordinator(DataUpdateCoordinator[HealthData]):
         except LiteLLMAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except LiteLLMConnectionError as err:
-            if self.data is None:
-                raise UpdateFailed(f"Error talking to LiteLLM: {err}") from err
+            _LOGGER.debug("Backend health unavailable: %s", err)
             # Proxy is alive: publish that, and only blank the backend entities.
             return HealthData(True, Health(), self._previous_topology(), backends_ok=False)
         if fallbacks is not None:  # keep the last good config through /router/settings outages

@@ -54,11 +54,14 @@ class LiteLLMRouterConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             url = normalize_url(user_input[CONF_URL])
-            await self.async_set_unique_id(url)
+            await self.async_set_unique_id(url, raise_on_progress=False)
             self._abort_if_unique_id_configured()
             if error := await _validate(self.hass, url, user_input[CONF_API_KEY]):
                 errors["base"] = error
             else:
+                # Re-check after the awaited validation: another flow may have won.
+                await self.async_set_unique_id(url, raise_on_progress=False)
+                self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=f"LiteLLM ({url})",
                     data={CONF_URL: url, CONF_API_KEY: user_input[CONF_API_KEY]},
@@ -95,6 +98,13 @@ class LiteLLMRouterConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    def _url_taken(self, entry: ConfigEntry, url: str) -> bool:
+        return any(
+            other.unique_id == url
+            for other in self._async_current_entries(include_ignore=False)
+            if other.entry_id != entry.entry_id
+        )
+
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -104,15 +114,14 @@ class LiteLLMRouterConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             url = normalize_url(user_input[CONF_URL])
             api_key = user_input.get(CONF_API_KEY) or entry.data[CONF_API_KEY]
-            if any(
-                other.unique_id == url
-                for other in self._async_current_entries(include_ignore=False)
-                if other.entry_id != entry.entry_id
-            ):
+            if self._url_taken(entry, url):
                 return self.async_abort(reason="already_configured")
             if error := await _validate(self.hass, url, api_key):
                 errors["base"] = error
             else:
+                # Re-check after the awaited validation (no await before the update).
+                if self._url_taken(entry, url):
+                    return self.async_abort(reason="already_configured")
                 return self.async_update_reload_and_abort(
                     entry,
                     unique_id=url,

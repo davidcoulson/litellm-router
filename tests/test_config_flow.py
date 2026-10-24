@@ -57,6 +57,8 @@ async def test_reauth(hass, aioclient_mock, entry) -> None:
     r = await hass.config_entries.flow.async_configure(r["flow_id"], {"api_key": "sk-new"})
     assert r["type"] is FlowResultType.ABORT and r["reason"] == "reauth_successful"
     assert entry.data["api_key"] == "sk-new"
+    await hass.async_block_till_done(wait_background_tasks=True)
+    await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_options(hass, aioclient_mock, entry) -> None:
@@ -140,3 +142,68 @@ async def test_reconfigure_duplicate_and_id_moves(hass, aioclient_mock, entry) -
         r["flow_id"], {"url": new, "api_key": API_KEY}
     )
     assert r["type"] is FlowResultType.ABORT
+
+
+def _gated_validate(monkeypatch, n):
+    """Make _validate wait until n callers are inside it, then succeed."""
+    import asyncio
+
+    from custom_components.litellm_router import config_flow
+
+    inside = []
+    release = asyncio.Event()
+
+    async def fake(hass, url, key):
+        inside.append(url)
+        if len(inside) >= n:
+            release.set()
+        await release.wait()
+
+    monkeypatch.setattr(config_flow, "_validate", fake)
+
+
+async def test_concurrent_user_flows_same_url(hass, monkeypatch) -> None:
+    import asyncio
+
+    _gated_validate(monkeypatch, 2)
+    flows = [
+        await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+        for _ in range(2)
+    ]
+    results = await asyncio.gather(
+        *(
+            hass.config_entries.flow.async_configure(f["flow_id"], {"url": URL, "api_key": API_KEY})
+            for f in flows
+        )
+    )
+    assert sorted(r["type"] for r in results) == sorted(
+        [FlowResultType.CREATE_ENTRY, FlowResultType.ABORT]
+    )
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+
+
+async def test_concurrent_reconfigure_same_url(hass, monkeypatch) -> None:
+    import asyncio
+
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    entries = []
+    for i in range(2):
+        e = MockConfigEntry(
+            domain=DOMAIN,
+            unique_id=f"http://p{i}:1",
+            data={"url": f"http://p{i}:1", "api_key": API_KEY},
+        )
+        e.add_to_hass(hass)
+        entries.append(e)
+    _gated_validate(monkeypatch, 2)
+    flows = [await e.start_reconfigure_flow(hass) for e in entries]
+    results = await asyncio.gather(
+        *(
+            hass.config_entries.flow.async_configure(f["flow_id"], {"url": "http://same:1"})
+            for f in flows
+        )
+    )
+    assert sorted(r["reason"] for r in results) == ["already_configured", "reconfigure_successful"]
+    assert sorted(e.unique_id for e in entries).count("http://same:1") == 1
+    await hass.async_block_till_done()
