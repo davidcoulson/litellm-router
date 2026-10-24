@@ -156,3 +156,14 @@ def test_degraded_startup_recovers_fallbacks_once() -> None:
     assert poll(p, line(12)).fallback_requests == 12  # recovered
     assert poll(p, line(12)).fallback_requests == 12  # not counted twice
     assert poll(p, line(13)).fallback_requests == 13
+
+
+def test_pending_series_recovered_after_series_disappears() -> None:
+    p = MetricsProcessor()
+    assert poll(p, req(FALLBACK, "qwen-local", 12), topo=Topology()).fallback_requests == 0
+    # proxy restarted: the old series (different label) is gone
+    other = req(FALLBACK, "qwen-local", 2).replace("curl", "curl2")
+    assert poll(p, other, topo=Topology()).fallback_requests == 0
+    assert poll(p).fallback_requests == 14  # topology back, series absent
+    assert poll(p).fallback_requests == 14  # exactly once
+    assert poll(p, other).fallback_requests == 14

@@ -80,6 +80,7 @@ class MetricsProcessor:
         self._fallback_total = 0.0
         self._client: dict[tuple, str] = {}
         self._classified: dict[tuple, float] = {}
+        self._req_meta: dict[tuple, tuple[str, str]] = {}
 
     def _resolve(self, labels: dict[str, str], topology: Topology) -> str | None:
         """Return the backend model_id a sample belongs to, if any."""
@@ -129,7 +130,7 @@ class MetricsProcessor:
                 self._client[key] = lb.get("client_ip", "None")
                 delta = acc.update(key, s.value)
                 served_delta[model_id] += delta
-                self._classify(key, model_id, lb.get("requested_model", ""), topology)
+                self._req_meta[key] = (model_id, lb.get("requested_model", ""))
                 continue
             key = (s.name, model_id, *sorted(lb.items()))
             delta = acc.update(key, s.value)
@@ -142,6 +143,8 @@ class MetricsProcessor:
             elif s.name == TTFT_COUNT:
                 t_counts[model_id] += delta
         acc.finish_poll()
+        for key, (mid, requested) in self._req_meta.items():
+            self._classify(key, mid, requested, topology)
 
         for mid, n in counts.items():
             if n > 0:
