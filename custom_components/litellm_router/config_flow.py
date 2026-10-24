@@ -104,11 +104,19 @@ class LiteLLMRouterConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             url = normalize_url(user_input[CONF_URL])
             api_key = user_input.get(CONF_API_KEY) or entry.data[CONF_API_KEY]
+            if any(
+                other.unique_id == url
+                for other in self._async_current_entries(include_ignore=False)
+                if other.entry_id != entry.entry_id
+            ):
+                return self.async_abort(reason="already_configured")
             if error := await _validate(self.hass, url, api_key):
                 errors["base"] = error
             else:
                 return self.async_update_reload_and_abort(
-                    entry, data_updates={CONF_URL: url, CONF_API_KEY: api_key}
+                    entry,
+                    unique_id=url,
+                    data_updates={CONF_URL: url, CONF_API_KEY: api_key},
                 )
         schema = vol.Schema(
             {

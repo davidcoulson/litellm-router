@@ -217,3 +217,30 @@ async def test_settings_outage_keeps_fallbacks_and_backend_membership(
     await advance(hass, 65)
     await hass.async_block_till_done(wait_background_tasks=True)
     assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "3"
+
+
+async def test_liveliness_ok_while_health_times_out(hass, aioclient_mock, entry) -> None:
+    mock_proxy(aioclient_mock, metrics_text())
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ent = er.async_get(hass)
+
+    mock_proxy(aioclient_mock, metrics_text(), liveliness={"exc": aiohttp.ClientError()})
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert state_of(hass, ent, entry, "proxy_reachable").state == "off"
+
+    # alive again, but /health times out: reachable recovers, backends blank
+    for _ in range(2):
+        mock_proxy(aioclient_mock, metrics_text(), health_ep={"exc": TimeoutError()})
+        await advance(hass, 65)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        assert state_of(hass, ent, entry, "proxy_reachable").state == "on"
+        assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == "unavailable"
+        assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "unavailable"
+
+    mock_proxy(aioclient_mock, metrics_text())
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == "on"

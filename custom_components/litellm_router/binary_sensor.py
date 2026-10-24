@@ -60,6 +60,7 @@ class BackendHealthy(BackendEntity[HealthCoordinator], BinarySensorEntity):
         return (
             super().available
             and data.reachable
+            and data.backends_ok
             and (self.model_id in data.health.healthy or self.model_id in data.health.unhealthy)
         )
 

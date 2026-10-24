@@ -33,6 +33,8 @@ class HealthData:
     reachable: bool = False
     health: Health = field(default_factory=Health)
     topology: Topology = field(default_factory=Topology)
+    # False when liveliness works but /health or /model/info failed this poll
+    backends_ok: bool = True
 
     @property
     def backends(self) -> dict[str, ModelInfo]:
@@ -77,7 +79,10 @@ class HealthCoordinator(DataUpdateCoordinator[HealthData]):
         except LiteLLMAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except LiteLLMConnectionError as err:
-            raise UpdateFailed(f"Error talking to LiteLLM: {err}") from err
+            if self.data is None:
+                raise UpdateFailed(f"Error talking to LiteLLM: {err}") from err
+            # Proxy is alive: publish that, and only blank the backend entities.
+            return HealthData(True, Health(), self._previous_topology(), backends_ok=False)
         if fallbacks is not None:  # keep the last good config through /router/settings outages
             self._fallbacks = fallbacks
         return HealthData(True, health, Topology(models, self._fallbacks))

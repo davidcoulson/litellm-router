@@ -101,5 +101,42 @@ async def test_reconfigure(hass, aioclient_mock, entry) -> None:
     r = await hass.config_entries.flow.async_configure(r["flow_id"], {"url": "new.test:4000/"})
     assert r["type"] is FlowResultType.ABORT and r["reason"] == "reconfigure_successful"
     assert entry.data == {"url": new, "api_key": API_KEY}
-    assert entry.unique_id == URL
+    assert entry.unique_id == new
     await hass.async_block_till_done()
+
+
+async def test_reconfigure_duplicate_and_id_moves(hass, aioclient_mock, entry) -> None:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    other_url = "http://other.test:4000"
+    other = MockConfigEntry(
+        domain=DOMAIN, unique_id=other_url, data={"url": other_url, "api_key": API_KEY}
+    )
+    other.add_to_hass(hass)
+    entry.add_to_hass(hass)
+    mock_proxy(aioclient_mock)
+    r = await entry.start_reconfigure_flow(hass)
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {"url": other_url + "/"})
+    assert r["type"] is FlowResultType.ABORT and r["reason"] == "already_configured"
+
+    # move entry from URL to a new address (no setup, so no reload side effects)
+    new = "http://moved.test:4000"
+    for path in ("/health/liveliness", "/metrics/"):
+        aioclient_mock.get(f"{new}{path}", text="")
+    r = await entry.start_reconfigure_flow(hass)
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {"url": new})
+    assert r["reason"] == "reconfigure_successful"
+    assert entry.unique_id == new
+    await hass.async_block_till_done()
+
+    # old URL can now be added; the new one is blocked
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    r = await hass.config_entries.flow.async_configure(
+        r["flow_id"], {"url": URL, "api_key": API_KEY}
+    )
+    assert r["type"] is FlowResultType.CREATE_ENTRY
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    r = await hass.config_entries.flow.async_configure(
+        r["flow_id"], {"url": new, "api_key": API_KEY}
+    )
+    assert r["type"] is FlowResultType.ABORT

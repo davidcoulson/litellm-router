@@ -134,7 +134,12 @@ class BackendSensor(BackendEntity[MetricsCoordinator], SensorEntity):
     def available(self) -> bool:
         """Unavailable while the proxy is down or the backend is gone."""
         data = self._entry.runtime_data.health.data
-        return super().available and data.reachable and self.model_id in data.backends
+        return (
+            super().available
+            and data.reachable
+            and data.backends_ok
+            and self.model_id in data.backends
+        )
 
     @property
     def native_value(self) -> float | None:
