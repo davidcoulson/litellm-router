@@ -69,7 +69,16 @@ def backend_name(topology: Topology, model_id: str) -> str:
 
 
 class MetricsProcessor:
-    """Stateful processor: feed it one sample list per poll."""
+    """Stateful processor: feed it one sample list per poll.
+
+    Two stages for every counter family:
+
+    1. ingest: update the per-source accumulator (metric name + all original labels)
+       on every poll, whatever the topology, so resets are always seen;
+    2. attribute: add the growth to the backend that resolves *now*. Growth that
+       cannot be attributed (or, for requests, classified as fallback) yet stays
+       pending per source and is applied exactly once later, even if the series vanishes.
+    """
 
     def __init__(self) -> None:
         """Initialise state."""
@@ -78,13 +87,13 @@ class MetricsProcessor:
         self._ttft: dict[str, float] = {}
         self._last_active: str | None = None
         self._fallback_total = 0.0
-        self._client: dict[tuple, str] = {}
-        self._classified: dict[tuple, float] = {}
         self._attr: dict[tuple[str, str], float] = defaultdict(float)
-        self._req_meta: dict[tuple, tuple[str, str]] = {}
+        self._labels: dict[tuple, dict[str, str]] = {}
+        self._pending_attr: dict[tuple, float] = defaultdict(float)
+        self._pending_cls: dict[tuple, float] = defaultdict(float)
 
     def _resolve(self, labels: dict[str, str], topology: Topology) -> str | None:
-        """Return the backend model_id a sample belongs to, if any."""
+        """Return the backend model_id a source belongs to, if currently known."""
         model_id = labels.get("model_id", "")
         if model_id:
             return model_id
@@ -93,66 +102,62 @@ class MetricsProcessor:
         ids = [m.model_id for m in topology.models.values() if m.name == group]
         return ids[0] if len(ids) == 1 else None
 
-    def _classify(self, key: tuple, model_id: str, requested: str, topology: Topology) -> None:
-        """Classify not-yet-classified requests of a series, exactly once.
-
-        Amounts seen while the backend is unknown to the topology (e.g. a failed
-        /model/info at startup) stay pending and are classified when it is known.
-        """
-        info = topology.models.get(model_id)
-        if info is None:
-            return
-        pending = self._acc.total(key) - self._classified.get(key, 0.0)
-        self._classified[key] = self._acc.total(key)
-        targets = topology.fallback_targets
-        if requested and requested != info.name and (not targets or info.name in targets):
-            self._fallback_total += pending
-
-    def _ingest(self, key: tuple, model_id: str, sample: Sample) -> float:
-        """Update the source counter (identity: name + labels) and attribute its growth."""
-        before = self._acc.total(key)
-        delta = self._acc.update(key, sample.value)
-        self._attr[(sample.name, model_id)] += self._acc.total(key) - before
-        return delta
-
     def process(self, samples: list[Sample], topology: Topology) -> MetricsData:
         """Update state from samples and return the current data."""
         acc = self._acc
+        poll_delta: dict[tuple, float] = {}
+
+        # stage 1: ingest
+        for s in samples:
+            if s.name not in _FAMILIES:
+                continue
+            lb = s.labels
+            if s.name == REQUESTS and (not _served(lb) or not lb.get("model_id")):
+                continue
+            key = (s.name, *sorted(lb.items()))
+            before = acc.total(key)
+            poll_delta[key] = acc.update(key, s.value)
+            added = acc.total(key) - before
+            self._labels[key] = lb
+            self._pending_attr[key] += added
+            if s.name == REQUESTS:
+                self._pending_cls[key] += added
+        acc.finish_poll()
+
+        # stage 2: attribute (all retained sources, including vanished ones)
         served_delta: dict[str, float] = defaultdict(float)
         sums: dict[str, float] = defaultdict(float)
         counts: dict[str, float] = defaultdict(float)
         t_sums: dict[str, float] = defaultdict(float)
         t_counts: dict[str, float] = defaultdict(float)
-
-        for s in samples:
-            if s.name not in _FAMILIES:
+        targets = topology.fallback_targets
+        for key, lb in self._labels.items():
+            name = key[0]
+            mid = self._resolve(lb, topology)
+            if mid is None:
                 continue
-            model_id = self._resolve(s.labels, topology)
-            if model_id is None:
-                continue
-            lb = s.labels
-            if s.name == REQUESTS:
-                if not _served(lb) or not lb.get("model_id"):
-                    continue
-                key = (s.name, *sorted(lb.items()))
-                self._client[key] = lb.get("client_ip", "None")
-                delta = self._ingest(key, model_id, s)
-                served_delta[model_id] += delta
-                self._req_meta[key] = (model_id, lb.get("requested_model", ""))
-                continue
-            key = (s.name, *sorted(lb.items()))
-            delta = self._ingest(key, model_id, s)
-            if s.name == LATENCY_SUM:
-                sums[model_id] += delta
-            elif s.name == LATENCY_COUNT:
-                counts[model_id] += delta
-            elif s.name == TTFT_SUM:
-                t_sums[model_id] += delta
-            elif s.name == TTFT_COUNT:
-                t_counts[model_id] += delta
-        acc.finish_poll()
-        for key, (mid, requested) in self._req_meta.items():
-            self._classify(key, mid, requested, topology)
+            self._attr[(name, mid)] += self._pending_attr.pop(key, 0.0)
+            delta = poll_delta.get(key, 0.0)
+            if name == REQUESTS:
+                served_delta[mid] += delta
+                info = topology.models.get(mid)
+                if info is not None:
+                    pending = self._pending_cls.pop(key, 0.0)
+                    requested = lb.get("requested_model", "")
+                    if (
+                        requested
+                        and requested != info.name
+                        and (not targets or info.name in targets)
+                    ):
+                        self._fallback_total += pending
+            elif name == LATENCY_SUM:
+                sums[mid] += delta
+            elif name == LATENCY_COUNT:
+                counts[mid] += delta
+            elif name == TTFT_SUM:
+                t_sums[mid] += delta
+            elif name == TTFT_COUNT:
+                t_counts[mid] += delta
 
         for mid, n in counts.items():
             if n > 0:
@@ -181,7 +186,7 @@ class MetricsProcessor:
                 )
         for key in acc.series():
             if key[0] == REQUESTS:
-                clients[self._client[key]] += acc.total(key)
+                clients[self._labels[key].get("client_ip", "None")] += acc.total(key)
         for model_id, stats in totals.items():
             stats.avg_latency = self._latency.get(model_id)
             stats.avg_ttft = self._ttft.get(model_id)

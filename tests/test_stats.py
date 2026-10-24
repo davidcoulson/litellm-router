@@ -183,3 +183,31 @@ def test_failure_attribution_does_not_double_count_on_deployment_swap() -> None:
     assert d.backends.get(FAST, BackendStats()).failures == 0
     d = poll(p, fail(12), topo=topo_b)  # only the growth goes to B
     assert d.backends[LOCAL].failures == 10 and d.backends[FAST].failures == 2
+
+
+def _fail(v):
+    return metric("litellm_proxy_failed_requests_metric_total", "", v, requested_model="g")
+
+
+def test_reset_during_unresolved_poll_is_counted() -> None:
+    p = MetricsProcessor()
+    topo_a = Topology({LOCAL: ModelInfo(LOCAL, "g")})
+    topo_b = Topology({FAST: ModelInfo(FAST, "g")})
+    assert poll(p, _fail(10), topo=topo_a).backends[LOCAL].failures == 10
+    d = poll(p, _fail(3), topo=Topology())  # reset seen while unresolved
+    assert d.backends[LOCAL].failures == 10
+    d = poll(p, _fail(12), topo=topo_b)  # 3 + 9 pending, total source 22
+    assert d.backends[LOCAL].failures == 10 and d.backends[FAST].failures == 12
+    d = poll(p, _fail(12), topo=topo_b)  # unchanged
+    assert d.backends[FAST].failures == 12
+
+
+def test_pending_applies_once_when_series_vanishes() -> None:
+    p = MetricsProcessor()
+    topo = Topology({LOCAL: ModelInfo(LOCAL, "g")})
+    poll(p, _fail(1), topo=Topology())
+    poll(p, _fail(5), topo=Topology())
+    poll(p, topo=Topology())
+    d = poll(p, topo=topo)  # series gone, topology back
+    assert d.backends[LOCAL].failures == 5
+    assert poll(p, topo=topo).backends[LOCAL].failures == 5
