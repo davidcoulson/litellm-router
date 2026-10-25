@@ -473,7 +473,7 @@ def test_forget_backend_clears_pending_of_group_keyed_sources() -> None:
     p.process(parse_prometheus(metrics_text(fail(10))), topo, now=0)
     p.process(parse_prometheus(metrics_text(fail(15))), gone, now=1)  # unresolved: pending 5
     assert sum(p._pending_attr.values()) == 5
-    p.forget_backend(FAST, gone)
+    p.forget_backend(FAST)
     assert sum(p._pending_attr.values()) == 0
     p2 = MetricsProcessor()
     assert p2.load_state(_json_roundtrip(p))
@@ -482,9 +482,22 @@ def test_forget_backend_clears_pending_of_group_keyed_sources() -> None:
     assert d.backends.get(FAST, BackendStats()).failures == 0
     d = p2.process(parse_prometheus(metrics_text(fail(17))), topo, now=3)
     assert d.backends[FAST].failures == 2
-    # another backend's group source is left alone when the topology resolves it
+    # deleting A leaves B's unresolved group pending, after a round-trip too
+    two = Topology({FAST: ModelInfo(FAST, "g"), LOCAL: ModelInfo(LOCAL, "h")}, {})
+
+    def failh(v):
+        return metric("litellm_proxy_failed_requests_metric_total", "", v, requested_model="h")
+
     p3 = MetricsProcessor()
-    p3.process(parse_prometheus(metrics_text(fail(1))), topo, now=0)
-    p3.process(parse_prometheus(metrics_text(fail(4))), gone, now=1)
-    p3.forget_backend(LOCAL, Topology({FAST: ModelInfo(FAST, "g")}, {}))
-    assert sum(p3._pending_attr.values()) == 3
+    p3.process(parse_prometheus(metrics_text(fail(1), failh(1))), two, now=0)
+    p3.process(parse_prometheus(metrics_text(fail(4), failh(6))), gone, now=1)
+    p4 = MetricsProcessor()
+    assert p4.load_state(_json_roundtrip(p3))
+    assert sum(p4._pending_attr.values()) == 8
+    p4.forget_backend(FAST)
+    assert sum(p4._pending_attr.values()) == 5  # only h's growth remains
+    p4.forget_backend(FAST)  # unknown group / already gone: nothing else touched
+    assert sum(p4._pending_attr.values()) == 5
+    old = _json_roundtrip(p3)
+    del old["owners"]
+    assert MetricsProcessor().load_state(old)  # states saved before ownership still load

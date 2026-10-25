@@ -123,6 +123,7 @@ class MetricsProcessor:
         self._pending_cls: dict[tuple, float] = defaultdict(float)
         self._last_seen: dict[tuple, float] = {}
         self._tombstones: dict[tuple, float] = {}
+        self._owners: dict[str, set[str]] = {}  # group -> backends seen serving it
         self._saturated = False
 
     @property
@@ -148,6 +149,8 @@ class MetricsProcessor:
         acc = self._acc
         poll_delta: dict[tuple, float] = {}
 
+        for info in topology.models.values():
+            self._owners.setdefault(info.name, set()).add(info.model_id)
         relevant = []
         for s in samples:
             if s.name not in _FAMILIES:
@@ -261,26 +264,30 @@ class MetricsProcessor:
             for key in remaining[:excess]:
                 self._drop(key)
 
-    def forget_backend(self, model_id: str, topology: Topology | None = None) -> None:
+    def forget_backend(self, model_id: str) -> None:
         """Drop a removed backend's exposed totals; keep its counter baselines.
 
         Scrapes may still carry the old series, so their last values stay as baselines
         (and tombstones stay): unchanged counters add nothing and a returning backend
         only counts growth from now on.
         """
-        topology = topology or Topology()
 
         def owned(key: tuple) -> bool:
             lb = dict(key[1:])
             if lb.get("model_id"):
                 return lb["model_id"] == model_id
-            # group-keyed sources (e.g. failures): ours if they resolve to us or to nobody
-            return self._resolve(lb, topology) in (None, model_id)
+            # group-keyed sources (e.g. failures): ours if we were seen serving that group
+            group = lb.get("requested_model") or lb.get("model_group") or ""
+            return model_id in self._owners.get(group, ())
 
         for key in [k for k in self._last_seen if owned(k)]:
             self._acc.restore(key, self._acc.last(key), 0.0)
             self._pending_attr.pop(key, None)
             self._pending_cls.pop(key, None)
+        for group in list(self._owners):
+            self._owners[group].discard(model_id)
+            if not self._owners[group]:
+                del self._owners[group]
         for attr in [a for a in self._attr if a[1] == model_id]:
             del self._attr[attr]
         self._latency.pop(model_id, None)
@@ -307,6 +314,7 @@ class MetricsProcessor:
             "tombstones": [
                 [[k[0], *[list(p) for p in k[1:]]], v] for k, v in self._tombstones.items()
             ],
+            "owners": {g: sorted(m) for g, m in self._owners.items()},
             "attr": [[n, m, v] for (n, m), v in self._attr.items()],
             "clients": dict(self._clients),
             "fallback": self._fallback_total,
@@ -345,6 +353,8 @@ class MetricsProcessor:
         self._saturated = bool(data["saturated"])
         for raw, last in data["tombstones"]:
             self._tombstones[to_key(raw)] = float(last)
+        for group, ids in data.get("owners", {}).items():
+            self._owners[str(group)] = {str(i) for i in ids}
         for name, mid, value in data["attr"]:
             self._attr[(str(name), str(mid))] = float(value)
         self._clients.update({str(k): float(v) for k, v in data["clients"].items()})
