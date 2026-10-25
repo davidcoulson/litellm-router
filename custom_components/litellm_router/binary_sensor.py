@@ -30,6 +30,7 @@ async def async_setup_entry(
         async_add_entities(BackendHealthy(health, entry, model_id, "healthy") for model_id in new)
 
     _add_new()
+    entry.runtime_data.rediscover.append(_add_new)
     entry.async_on_unload(health.async_add_listener(_add_new))
 
 

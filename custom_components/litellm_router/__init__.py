@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceEntry
 
@@ -25,8 +27,10 @@ class LiteLLMRuntimeData:
     client: LiteLLMClient
     health: HealthCoordinator
     metrics: MetricsCoordinator
-    # model_ids that already have entities, per platform (cleared on device removal)
+    # platform entity-discovery callbacks, re-run after a backend device is really removed
+    # model_ids that already have entities, per platform (forgotten once the device is gone)
     known: dict[str, set[str]] = field(default_factory=lambda: {p: set() for p in PLATFORMS})
+    rediscover: list[Callable[[], None]] = field(default_factory=list)
 
 
 type LiteLLMConfigEntry = ConfigEntry[LiteLLMRuntimeData]
@@ -44,7 +48,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> b
     await metrics.async_load_state()
     metrics.start_checkpoints()
     await metrics.async_config_entry_first_refresh()
-    entry.runtime_data = LiteLLMRuntimeData(client, health, metrics)
+    runtime = LiteLLMRuntimeData(client, health, metrics)
+    entry.runtime_data = runtime
+
+    @callback
+    def _device_registry_updated(event: Event) -> None:
+        # Only once a device is really gone can its entities be recreated for a returning backend.
+        if event.data["action"] != "remove":
+            return
+        registry = dr.async_get(hass)
+        for known in runtime.known.values():
+            for model_id in list(known):
+                if registry.async_get_device({(DOMAIN, f"{entry.entry_id}_{model_id}")}) is None:
+                    known.discard(model_id)
+        for discover in runtime.rediscover:
+            discover()
+
+    entry.async_on_unload(hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _device_registry_updated))
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -84,8 +104,6 @@ async def async_remove_config_entry_device(
     if runtime:
         for model_id in model_ids:
             runtime.metrics.processor.forget_backend(model_id)
-            for known in runtime.known.values():
-                known.discard(model_id)
         await runtime.metrics.async_save_state()
     else:
         # not loaded: clean the stored totals so they don't return on the next setup

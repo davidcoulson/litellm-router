@@ -104,6 +104,7 @@ async def async_setup_entry(
         )
 
     _add_new()
+    entry.runtime_data.rediscover.append(_add_new)
     entry.async_on_unload(runtime.health.async_add_listener(_add_new))
 
 

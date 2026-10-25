@@ -461,6 +461,58 @@ async def test_returning_backend_recreates_entities_after_device_removal(
     assert state_of(hass, ent, entry, f"{FAST}_requests").state == "0"
 
 
+async def test_backend_returning_during_removal_save_is_rediscovered(
+    hass, aioclient_mock, entry
+) -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    from custom_components.litellm_router import async_remove_config_entry_device
+
+    mock_proxy(aioclient_mock, metrics_text(req(FAST, "qwen-fast", 7)))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ent, devs = er.async_get(hass), dr.async_get(hass)
+    fast_ident = {(DOMAIN, f"{entry.entry_id}_{FAST}")}
+
+    mock_proxy(
+        aioclient_mock,
+        metrics_text(),
+        health={**HEALTH, "unhealthy_endpoints": []},
+        model_info={"json": {"data": MODEL_INFO["data"][:2]}},
+    )
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    device = devs.async_get_device(fast_ident)
+
+    gate = asyncio.Event()
+    save = entry.runtime_data.metrics.async_save_state
+
+    calls = 0
+
+    async def slow_save():
+        nonlocal calls
+        calls += 1
+        if calls == 1:  # only the removal's save is paused; periodic checkpoints go through
+            await gate.wait()
+        await save()
+
+    with patch.object(entry.runtime_data.metrics, "async_save_state", slow_save):
+        removal = asyncio.create_task(async_remove_config_entry_device(hass, entry, device))
+        await asyncio.sleep(0)
+        mock_proxy(aioclient_mock, metrics_text())  # backend returns while the save is pending
+        await advance(hass, 65)
+        await hass.async_block_till_done()
+        gate.set()
+        assert await removal
+    devs.async_remove_device(device.id)  # now the real registry removal
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert devs.async_get_device(fast_ident) is not None
+    assert state_of(hass, ent, entry, f"{FAST}_healthy").state == "off"
+
+
 async def test_delete_while_unloaded_cleans_store(
     hass, aioclient_mock, entry, hass_storage
 ) -> None:
