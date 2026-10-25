@@ -400,9 +400,9 @@ def test_tombstone_eviction_makes_unknown_sources_baselines(monkeypatch) -> None
     run = lambda proc, now, *ls: proc.process(parse_prometheus(metrics_text(*ls)), TOPO, now=now)  # noqa: E731
     for i, k in enumerate("ABCD"):
         d = run(p, i * 10, tok(k))
-    assert d.backends[LOCAL].tokens_in == 400
+    assert d.backends[LOCAL].tokens_in == 300  # D arrived after history loss: baseline
     assert p._saturated
     p2 = MetricsProcessor(retention=1)
     assert p2.load_state(_json_roundtrip(p))
-    assert run(p2, 100, tok("A")).backends[LOCAL].tokens_in == 400  # evicted A returns unchanged
-    assert run(p, 100, tok("A")).backends[LOCAL].tokens_in == 400
+    assert run(p2, 100, tok("A")).backends[LOCAL].tokens_in == 300  # evicted A returns unchanged
+    assert run(p, 100, tok("A")).backends[LOCAL].tokens_in == 300
