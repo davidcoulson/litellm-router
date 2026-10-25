@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 from dataclasses import dataclass, field
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import (
@@ -24,6 +26,14 @@ from .prometheus import parse_prometheus
 from .stats import MetricsData, MetricsProcessor
 
 _LOGGER = logging.getLogger(__name__)
+
+SAVE_DELAY = 30
+STORE_VERSION = 1
+
+
+def metrics_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
+    """Return the per-entry store for accumulated totals."""
+    return Store(hass, STORE_VERSION, f"{DOMAIN}.{entry_id}")
 
 
 @dataclass(slots=True)
@@ -113,6 +123,15 @@ class MetricsCoordinator(DataUpdateCoordinator[MetricsData]):
         self.client = client
         self.health = health
         self.processor = MetricsProcessor()
+        self.store = metrics_store(hass, entry.entry_id)
+
+    async def async_load_state(self) -> None:
+        """Restore accumulated totals saved by a previous run (tolerates bad data)."""
+        self.processor.load_state(await self.store.async_load())
+
+    async def async_save_state(self) -> None:
+        """Write accumulated totals now."""
+        await self.store.async_save(self.processor.export_state())
 
     async def _async_update_data(self) -> MetricsData:
         try:
@@ -122,4 +141,6 @@ class MetricsCoordinator(DataUpdateCoordinator[MetricsData]):
         except LiteLLMConnectionError as err:
             raise UpdateFailed(f"Error fetching metrics: {err}") from err
         topology = self.health.data.topology if self.health.data else Topology()
-        return self.processor.process(parse_prometheus(text), topology)
+        data = self.processor.process(parse_prometheus(text), topology)
+        self.store.async_delay_save(self.processor.export_state, SAVE_DELAY)
+        return data

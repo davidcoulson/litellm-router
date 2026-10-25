@@ -85,3 +85,14 @@ async def test_bad_json_and_fallbacks_degrade(hass, aioclient_mock) -> None:
     with pytest.raises(LiteLLMConnectionError):
         await c.model_info()
     assert await c.fallbacks() is None
+
+
+def test_sanitize_url() -> None:
+    from custom_components.litellm_router.api import sanitize_url
+
+    out = sanitize_url("http://user:pw@host:4000/v1?api_key=abc&x=1&Token=t#frag")
+    assert out == "http://host:4000/v1?api_key=**REDACTED**&x=1&Token=**REDACTED**"
+    assert "pw" not in out
+    assert sanitize_url("http://[::1]:8/p") == "http://[::1]:8/p"
+    assert sanitize_url("http://u:p@h") == "http://h"
+    assert sanitize_url("http://h:notaport/") == "**INVALID_URL**"

@@ -6,7 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
-from .api import Topology, normalize_url
+from .api import Topology, normalize_url, sanitize_url
 from .const import CONF_URL, DOMAIN
 from .stats import backend_name
 
@@ -18,7 +18,7 @@ def proxy_device(entry: ConfigEntry) -> DeviceInfo:
         name="LiteLLM proxy",
         manufacturer="BerriAI",
         model="LiteLLM proxy",
-        configuration_url=normalize_url(entry.data[CONF_URL]),
+        configuration_url=sanitize_url(normalize_url(entry.data[CONF_URL])),
     )
 
 

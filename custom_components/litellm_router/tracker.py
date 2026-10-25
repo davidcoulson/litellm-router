@@ -50,3 +50,21 @@ class CounterAccumulator:
     def series(self) -> list[Hashable]:
         """Return every series seen so far."""
         return list(self._total)
+
+    def last(self, key: Hashable) -> float | None:
+        """Return the last raw reading, if any."""
+        return self._last.get(key)
+
+    def restore(self, key: Hashable, last: float, total: float) -> None:
+        """Restore a series from persisted state."""
+        self._last[key] = last
+        self._total[key] = total
+
+    def forget(self, key: Hashable) -> None:
+        """Drop a series."""
+        self._last.pop(key, None)
+        self._total.pop(key, None)
+
+    def set_primed(self, primed: bool) -> None:
+        """Restore the primed flag."""
+        self._primed = primed

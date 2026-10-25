@@ -53,8 +53,11 @@ Per backend:
 Behaviour notes:
 
 * Totals are accumulated from per-poll deltas and never go negative. When the LiteLLM container restarts (counters
-  drop) the new value is counted as the delta, so the sensors keep rising. After a Home Assistant restart totals
-  start from the proxy's current counters.
+  drop) the new value is counted as the delta, so the sensors keep rising. Totals are saved per config entry
+  (Home Assistant storage, deleted with the entry) and restored on reload and restart, so they continue where they
+  were; only a first-ever setup starts from the proxy's current counters.
+* Per-source counter state is bounded: sources unseen for 24 h with nothing pending are rolled into the totals and
+  dropped (at most 5000 are kept). A dropped source that returns continues from its last reading.
 * Average latency and time to first token keep their last value during idle polls (an interval with no new requests
   has no average).
 * Series without a `model_id` (the proxy's own health probes) are ignored.
@@ -65,7 +68,8 @@ Behaviour notes:
 
 ## Diagnostics
 
-Download diagnostics from the device page; the API key is redacted.
+Download diagnostics from the device page; the API key is redacted and credentials in URLs (userinfo and
+credential-like query values, including backend `api_base`) are stripped everywhere they are shown.
 
 ## Development
 

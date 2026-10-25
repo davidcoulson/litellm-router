@@ -15,7 +15,13 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import LiteLLMAuthError, LiteLLMClient, LiteLLMConnectionError, normalize_url
+from .api import (
+    LiteLLMAuthError,
+    LiteLLMClient,
+    LiteLLMConnectionError,
+    normalize_url,
+    sanitize_url,
+)
 from .const import (
     CONF_API_KEY,
     CONF_HEALTH_INTERVAL,
@@ -54,16 +60,17 @@ class LiteLLMRouterConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             url = normalize_url(user_input[CONF_URL])
-            await self.async_set_unique_id(url, raise_on_progress=False)
+            uid = sanitize_url(url)
+            await self.async_set_unique_id(uid, raise_on_progress=False)
             self._abort_if_unique_id_configured()
             if error := await _validate(self.hass, url, user_input[CONF_API_KEY]):
                 errors["base"] = error
             else:
                 # Re-check after the awaited validation: another flow may have won.
-                await self.async_set_unique_id(url, raise_on_progress=False)
+                await self.async_set_unique_id(uid, raise_on_progress=False)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=f"LiteLLM ({url})",
+                    title=f"LiteLLM ({uid})",
                     data={CONF_URL: url, CONF_API_KEY: user_input[CONF_API_KEY]},
                 )
         schema = vol.Schema(
@@ -94,13 +101,13 @@ class LiteLLMRouterConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=vol.Schema({vol.Required(CONF_API_KEY): str}),
-            description_placeholders={"url": entry.data[CONF_URL]},
+            description_placeholders={"url": sanitize_url(entry.data[CONF_URL])},
             errors=errors,
         )
 
     def _url_taken(self, entry: ConfigEntry, url: str) -> bool:
         return any(
-            other.unique_id == url
+            other.unique_id == sanitize_url(url)
             for other in self._async_current_entries(include_ignore=False)
             if other.entry_id != entry.entry_id
         )
@@ -124,7 +131,7 @@ class LiteLLMRouterConfigFlow(ConfigFlow, domain=DOMAIN):
                     return self.async_abort(reason="already_configured")
                 return self.async_update_reload_and_abort(
                     entry,
-                    unique_id=url,
+                    unique_id=sanitize_url(url),
                     data_updates={CONF_URL: url, CONF_API_KEY: api_key},
                 )
         schema = vol.Schema(

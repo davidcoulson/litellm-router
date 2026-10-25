@@ -51,3 +51,14 @@ def test_accumulator_baseline_new_reset_and_return() -> None:
     assert acc.total("a") == 17
     assert acc.total("missing") == 0
     assert set(acc.series()) == {"a", "new"}
+
+
+def test_accumulator_restore_forget() -> None:
+    acc = CounterAccumulator()
+    acc.restore("a", 5.0, 9.0)
+    acc.set_primed(True)
+    assert acc.primed and acc.last("a") == 5.0 and acc.total("a") == 9.0
+    assert acc.update("a", 7) == 2
+    acc.forget("a")
+    acc.forget("a")
+    assert acc.last("a") is None and acc.total("a") == 0

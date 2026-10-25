@@ -7,6 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import LiteLLMConfigEntry
+from .api import sanitize_url
 from .coordinator import HealthCoordinator
 from .entity import BackendEntity, ProxyEntity
 
@@ -73,4 +74,4 @@ class BackendHealthy(BackendEntity[HealthCoordinator], BinarySensorEntity):
     def extra_state_attributes(self) -> dict[str, str]:
         """Expose where the backend lives."""
         info = self.coordinator.data.backends.get(self.model_id)
-        return {"api_base": info.api_base, "model": info.model} if info else {}
+        return {"api_base": sanitize_url(info.api_base), "model": info.model} if info else {}

@@ -1,5 +1,7 @@
 """Stats processing: deltas, resets, fallbacks, active backend."""
 
+import pytest
+
 from custom_components.litellm_router.api import ModelInfo, Topology
 from custom_components.litellm_router.prometheus import parse_prometheus
 from custom_components.litellm_router.stats import BackendStats, MetricsProcessor, backend_name
@@ -211,3 +213,124 @@ def test_pending_applies_once_when_series_vanishes() -> None:
     d = poll(p, topo=topo)  # series gone, topology back
     assert d.backends[LOCAL].failures == 5
     assert poll(p, topo=topo).backends[LOCAL].failures == 5
+
+
+def _json_roundtrip(p):
+    import json
+
+    return json.loads(json.dumps(p.export_state()))
+
+
+def test_state_roundtrip_keeps_totals_and_pending() -> None:
+    p = MetricsProcessor()
+    poll(p, req(LOCAL, "qwen-local", 100), req(FALLBACK, "qwen-local", 5), topo=Topology())
+    poll(p, req(LOCAL, "qwen-local", 3), req(FALLBACK, "qwen-local", 5), topo=Topology())
+    p.process(parse_prometheus(metrics_text(*lat(LOCAL, 2.0, 4))), TOPO)
+    p2 = MetricsProcessor()
+    assert p2.load_state(_json_roundtrip(p))
+    # unchanged scrape after reload: nothing new, totals held, pending classified once
+    d = poll(p2, req(LOCAL, "qwen-local", 3), req(FALLBACK, "qwen-local", 5))
+    assert d.backends[LOCAL].requests == 103
+    assert d.fallback_requests == 5
+    assert d.last_active_backend == "aaaaaaaa"
+    d = poll(p2, req(LOCAL, "qwen-local", 3), req(FALLBACK, "qwen-local", 5))
+    assert d.fallback_requests == 5 and d.clients == {"10.0.0.9": 108}
+    d = poll(p2, req(LOCAL, "qwen-local", 4), req(FALLBACK, "qwen-local", 5))
+    assert d.backends[LOCAL].requests == 104 and d.active_backend == "qwen-local"
+    # last_active and averages are restored too
+    p3 = MetricsProcessor()
+    assert p3.load_state(_json_roundtrip(p2))
+    assert poll(p3, req(LOCAL, "qwen-local", 4)).last_active_backend == "qwen-local"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [None, [], {"version": 99}, {"version": 1}, {"version": 1, "sources": [{"key": []}]}],
+)
+def test_load_state_tolerates_bad_data(bad) -> None:
+    p = MetricsProcessor()
+    poll(p, req(LOCAL, "qwen-local", 1))
+    assert not p.load_state(bad)
+    assert p.source_count == 0
+    assert poll(p, req(LOCAL, "qwen-local", 2)).backends[LOCAL].requests == 2
+
+
+def test_retention_bounds_state_under_churn() -> None:
+    p = MetricsProcessor(retention=100, max_sources=10)
+    now = 0.0
+    for i in range(300):
+        now += 60
+        line = req(LOCAL, "qwen-local", 1, client=f"10.1.{i // 250}.{i % 250}")
+        p.process(parse_prometheus(metrics_text(line)), TOPO, now=now)
+        assert p.source_count <= 10
+    d = p.process([], TOPO, now=now + 1)
+    assert d.backends[LOCAL].requests == 300  # nothing lost when sources were dropped
+    assert len(d.clients) == 300
+    assert len(p.export_state()["sources"]) <= 10
+
+
+def test_returning_dropped_source_is_not_double_counted() -> None:
+    p = MetricsProcessor(retention=100)
+    line = lambda v: req(LOCAL, "qwen-local", v)  # noqa: E731
+    p.process(parse_prometheus(metrics_text(line(10))), TOPO, now=0)
+    p.process([], TOPO, now=1000)
+    assert p.source_count == 0
+    d = p.process(parse_prometheus(metrics_text(line(12))), TOPO, now=1001)
+    assert d.backends[LOCAL].requests == 12  # 10 + growth of 2
+    # restart while dropped: a lower value is a reset
+    p.process([], TOPO, now=5000)
+    d = p.process(parse_prometheus(metrics_text(line(3))), TOPO, now=5001)
+    assert d.backends[LOCAL].requests == 15
+
+
+def test_pending_sources_are_never_dropped() -> None:
+    p = MetricsProcessor(retention=100, max_sources=1)
+    for i in range(3):
+        p.process(
+            parse_prometheus(metrics_text(req(FALLBACK, "qwen-local", 2, client=f"c{i}"))),
+            Topology(),
+            now=i,
+        )
+    p.process([], Topology(), now=10_000)
+    assert p.source_count == 3
+    d = p.process([], TOPO, now=10_001)  # topology back: classified, then droppable
+    assert d.fallback_requests == 6
+    p.process([], TOPO, now=20_000)
+    assert p.source_count == 0
+
+
+def test_tombstones_are_capped(monkeypatch) -> None:
+    from custom_components.litellm_router import stats
+
+    monkeypatch.setattr(stats, "MAX_TOMBSTONES", 2)
+    p = MetricsProcessor(retention=1)
+    for i in range(4):
+        p.process(
+            parse_prometheus(metrics_text(req(LOCAL, "qwen-local", 1, client=f"c{i}"))),
+            TOPO,
+            now=i * 10,
+        )
+    p.process([], TOPO, now=1000)
+    assert len(p.export_state()["tombstones"]) == 2
+
+
+def test_cap_drops_oldest_when_not_stale() -> None:
+    p = MetricsProcessor(retention=10**9, max_sources=2)
+    for i in range(5):
+        p.process(
+            parse_prometheus(metrics_text(req(LOCAL, "qwen-local", 1, client=f"c{i}"))), TOPO, now=i
+        )
+    assert p.source_count == 2
+
+
+def test_roundtrip_with_unresolved_pending_and_tombstones() -> None:
+    p = MetricsProcessor(retention=5)
+    p.process(parse_prometheus(metrics_text(req(LOCAL, "qwen-local", 4))), TOPO, now=0)
+    fail = metric("litellm_proxy_failed_requests_metric_total", "", 7, requested_model="g")
+    p.process(parse_prometheus(metrics_text(fail)), Topology(), now=100)  # drops the request source
+    p2 = MetricsProcessor()
+    assert p2.load_state(_json_roundtrip(p))
+    d = p2.process([], Topology({LOCAL: ModelInfo(LOCAL, "g")}), now=101)
+    assert d.backends[LOCAL].failures == 7 and d.backends[LOCAL].requests == 4
+    d = p2.process(parse_prometheus(metrics_text(req(LOCAL, "qwen-local", 6))), TOPO, now=102)
+    assert d.backends[LOCAL].requests == 6  # tombstone continuation: 4 + 2

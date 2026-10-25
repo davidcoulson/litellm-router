@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -61,6 +62,29 @@ def normalize_url(url: str) -> str:
     if "://" not in url:
         url = f"http://{url}"
     return url
+
+
+_SECRET_PARTS = ("key", "token", "secret", "password", "passwd", "pwd", "auth", "sig", "credential")
+
+
+def sanitize_url(url: str) -> str:
+    """Drop userinfo and fragment and redact credential-like query values."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = host + (f":{parts.port}" if parts.port else "")
+    except ValueError:
+        return "**INVALID_URL**"
+    query = urlencode(
+        [
+            (k, "**REDACTED**" if any(p in k.lower() for p in _SECRET_PARTS) else v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        ],
+        safe="*",
+    )
+    return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
 
 
 def parse_health(data: dict[str, Any]) -> Health:

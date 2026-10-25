@@ -11,7 +11,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import LiteLLMClient
 from .const import CONF_API_KEY, CONF_URL
-from .coordinator import HealthCoordinator, MetricsCoordinator
+from .coordinator import HealthCoordinator, MetricsCoordinator, metrics_store
 
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
@@ -37,6 +37,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> b
     # The first refresh raises ConfigEntryNotReady / ConfigEntryAuthFailed as needed.
     await health.async_config_entry_first_refresh()
     metrics = MetricsCoordinator(hass, entry, client, health)
+    await metrics.async_load_state()
     await metrics.async_config_entry_first_refresh()
     entry.runtime_data = LiteLLMRuntimeData(client, health, metrics)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
@@ -50,4 +51,10 @@ async def _async_reload(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> bool:
     """Unload a config entry."""
+    await entry.runtime_data.metrics.async_save_state()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> None:
+    """Delete the stored totals when the entry is removed."""
+    await metrics_store(hass, entry.entry_id).async_remove()

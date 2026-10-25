@@ -264,3 +264,83 @@ async def test_setup_with_health_timing_out(hass, aioclient_mock, entry) -> None
     await hass.async_block_till_done(wait_background_tasks=True)
     assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == "on"
     assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "4"
+
+
+async def test_totals_survive_reload_and_pending_too(
+    hass, aioclient_mock, entry, hass_storage
+) -> None:
+    mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 100)))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ent = er.async_get(hass)
+    mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 3)))  # proxy restarted
+    await advance(hass, 31)
+    assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "103"
+
+    # reload with unchanged metrics: totals must not drop back to 3
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "103"
+    assert f"{DOMAIN}.{entry.entry_id}" in hass_storage
+
+    # removing the entry deletes the stored totals
+    await hass.config_entries.async_remove(entry.entry_id)
+    assert f"{DOMAIN}.{entry.entry_id}" not in hass_storage
+
+
+async def test_pending_growth_survives_reload(hass, aioclient_mock, entry) -> None:
+    mock_proxy(
+        aioclient_mock,
+        metrics_text(req(FALLBACK, "qwen-local", 5)),
+        model_info={"json": {"data": []}},
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ent = er.async_get(hass)
+    assert state_of(hass, ent, entry, "fallback_requests").state == "0"
+
+    mock_proxy(aioclient_mock, metrics_text(req(FALLBACK, "qwen-local", 5)))  # topology back
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert state_of(hass, ent, entry, "fallback_requests").state == "5"
+
+
+async def test_urls_are_sanitized_in_diagnostics_and_attributes(hass, aioclient_mock) -> None:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    secret_url = "http://admin:hunter2@litellm.test:4000"
+    e = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="http://litellm.test:4000",
+        data={"url": secret_url, "api_key": API_KEY},
+    )
+    health = {
+        **HEALTH,
+        "healthy_endpoints": [
+            {
+                "api_base": "http://u:pw@strata/v1?api_key=SEKRET",
+                "model": "openai/qwen",
+                "model_id": LOCAL,
+            }
+        ],
+        "unhealthy_endpoints": [],
+    }
+    for path in ("/health/liveliness", "/metrics/"):
+        aioclient_mock.get(f"{secret_url}{path}", text="")
+    aioclient_mock.get(f"{secret_url}/health", json=health)
+    aioclient_mock.get(f"{secret_url}/model/info", json={"data": []})
+    aioclient_mock.get(f"{secret_url}/router/settings", json={})
+    e.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(e.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    diag = str(await async_get_config_entry_diagnostics(hass, e))
+    for leak in ("hunter2", "admin", "pw@", "SEKRET", API_KEY):
+        assert leak not in diag
+    ent = er.async_get(hass)
+    st = state_of(hass, ent, e, f"{LOCAL}_healthy")
+    assert st.attributes["api_base"] == "http://strata/v1?api_key=**REDACTED**"
+    dev = dr.async_get(hass).async_get_device({(DOMAIN, e.entry_id)})
+    assert dev.configuration_url == "http://litellm.test:4000"
