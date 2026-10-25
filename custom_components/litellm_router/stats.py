@@ -243,6 +243,7 @@ class MetricsProcessor:
         self._pending_cls.pop(key, None)
         while len(self._tombstones) > MAX_TOMBSTONES:
             del self._tombstones[next(iter(self._tombstones))]
+            self._saturated = True  # history lost: unknown sources become baselines
 
     def _prune(self, now: float, present: set[tuple]) -> None:
         """Bound retained state. Only sources absent from the current scrape and with
