@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -27,7 +29,7 @@ from .stats import MetricsData, MetricsProcessor
 
 _LOGGER = logging.getLogger(__name__)
 
-SAVE_DELAY = 30
+CHECKPOINT_INTERVAL = timedelta(seconds=60)
 STORE_VERSION = 1
 
 
@@ -129,6 +131,16 @@ class MetricsCoordinator(DataUpdateCoordinator[MetricsData]):
         """Restore accumulated totals saved by a previous run (tolerates bad data)."""
         self.processor.load_state(await self.store.async_load())
 
+    def start_checkpoints(self) -> None:
+        """Write the latest state every minute, regardless of the poll interval."""
+
+        async def _checkpoint(_now: datetime) -> None:
+            await self.async_save_state()
+
+        self.config_entry.async_on_unload(
+            async_track_time_interval(self.hass, _checkpoint, CHECKPOINT_INTERVAL)
+        )
+
     async def async_save_state(self) -> None:
         """Write accumulated totals now."""
         await self.store.async_save(self.processor.export_state())
@@ -142,5 +154,4 @@ class MetricsCoordinator(DataUpdateCoordinator[MetricsData]):
             raise UpdateFailed(f"Error fetching metrics: {err}") from err
         topology = self.health.data.topology if self.health.data else Topology()
         data = self.processor.process(parse_prometheus(text), topology)
-        self.store.async_delay_save(self.processor.export_state, SAVE_DELAY)
         return data

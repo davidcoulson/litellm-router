@@ -284,7 +284,7 @@ def test_returning_dropped_source_is_not_double_counted() -> None:
 
 
 def test_pending_sources_are_never_dropped() -> None:
-    p = MetricsProcessor(retention=100, max_sources=1)
+    p = MetricsProcessor(retention=100, max_sources=10)
     for i in range(3):
         p.process(
             parse_prometheus(metrics_text(req(FALLBACK, "qwen-local", 2, client=f"c{i}"))),
@@ -296,6 +296,7 @@ def test_pending_sources_are_never_dropped() -> None:
     d = p.process([], TOPO, now=10_001)  # topology back: classified, then droppable
     assert d.fallback_requests == 6
     p.process([], TOPO, now=20_000)
+    p.process([], TOPO, now=20_001)
     assert p.source_count == 0
 
 
@@ -334,3 +335,34 @@ def test_roundtrip_with_unresolved_pending_and_tombstones() -> None:
     assert d.backends[LOCAL].failures == 7 and d.backends[LOCAL].requests == 4
     d = p2.process(parse_prometheus(metrics_text(req(LOCAL, "qwen-local", 6))), TOPO, now=102)
     assert d.backends[LOCAL].requests == 6  # tombstone continuation: 4 + 2
+
+
+def test_live_series_over_caps_never_change_totals(monkeypatch) -> None:
+    from custom_components.litellm_router import stats
+
+    monkeypatch.setattr(stats, "MAX_TOMBSTONES", 2)
+    p = MetricsProcessor(retention=10**9, max_sources=3)
+    lines = [metric("litellm_input_tokens_metric_total", LOCAL, 100, k=i) for i in range(10)]
+    totals = []
+    for n in range(4):
+        d = p.process(parse_prometheus(metrics_text(*lines)), TOPO, now=n)
+        totals.append(d.backends[LOCAL].tokens_in)
+    assert totals == [300] * 4
+    assert p.source_count == 3
+    # growth of an admitted series still counts
+    lines[0] = metric("litellm_input_tokens_metric_total", LOCAL, 150, k=0)
+    assert (
+        p.process(parse_prometheus(metrics_text(*lines)), TOPO, now=9).backends[LOCAL].tokens_in
+        == 350
+    )
+
+
+def test_overflow_series_admitted_with_baseline_when_room_frees() -> None:
+    p = MetricsProcessor(retention=10**9, max_sources=2)
+    tok = lambda k, v: metric("litellm_input_tokens_metric_total", LOCAL, v, k=k)  # noqa: E731
+    run = lambda now, *ls: p.process(parse_prometheus(metrics_text(*ls)), TOPO, now=now)  # noqa: E731
+    run(0, tok("A", 10), tok("B", 10), tok("C", 5))
+    d = run(1, tok("A", 10), tok("B", 10), tok("C", 7))
+    assert d.backends[LOCAL].tokens_in == 20
+    d = run(2, tok("A", 10), tok("C", 9))  # B gone: room for C, counted from its baseline 7
+    assert d.backends[LOCAL].tokens_in == 22

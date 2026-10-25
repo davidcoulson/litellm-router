@@ -38,6 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> b
     await health.async_config_entry_first_refresh()
     metrics = MetricsCoordinator(hass, entry, client, health)
     await metrics.async_load_state()
+    metrics.start_checkpoints()
     await metrics.async_config_entry_first_refresh()
     entry.runtime_data = LiteLLMRuntimeData(client, health, metrics)
     entry.async_on_unload(entry.add_update_listener(_async_reload))

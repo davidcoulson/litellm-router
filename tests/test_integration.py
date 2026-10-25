@@ -18,6 +18,7 @@ from .conftest import (
     FAST,
     HEALTH,
     LOCAL,
+    URL,
     metric,
     metrics_text,
     mock_proxy,
@@ -344,3 +345,26 @@ async def test_urls_are_sanitized_in_diagnostics_and_attributes(hass, aioclient_
     assert st.attributes["api_base"] == "http://strata/v1?api_key=**REDACTED**"
     dev = dr.async_get(hass).async_get_device({(DOMAIN, e.entry_id)})
     assert dev.configuration_url == "http://litellm.test:4000"
+
+
+async def test_checkpoints_written_during_fast_polling(hass, aioclient_mock, hass_storage) -> None:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=URL,
+        data={"url": URL, "api_key": API_KEY},
+        options={"metrics_interval": 10, "health_interval": 10},
+    )
+    mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 5)))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    key = f"{DOMAIN}.{entry.entry_id}"
+    assert key not in hass_storage
+    base = dt_util.utcnow()
+    for i in range(1, 8):  # 70 s of continuous 10 s polling
+        async_fire_time_changed(hass, base + timedelta(seconds=10 * i))
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass_storage[key]["data"]["attr"]
+    await hass.config_entries.async_unload(entry.entry_id)

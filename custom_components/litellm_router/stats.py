@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import logging
 import time
 from typing import Any
 from dataclasses import dataclass, field
@@ -11,6 +12,8 @@ from .api import Topology
 from .const import IDLE
 from .prometheus import Sample
 from .tracker import CounterAccumulator
+
+_LOGGER = logging.getLogger(__name__)
 
 # A source (metric name + full label set) that has not been seen for this long and has
 # no pending growth is rolled into the aggregates and dropped. Dropped sources leave a
@@ -119,6 +122,8 @@ class MetricsProcessor:
         self._pending_cls: dict[tuple, float] = defaultdict(float)
         self._last_seen: dict[tuple, float] = {}
         self._tombstones: dict[tuple, float] = {}
+        self._overflow: dict[tuple, float] = {}
+        self._warned = False
 
     @property
     def source_count(self) -> int:
@@ -143,17 +148,35 @@ class MetricsProcessor:
         acc = self._acc
         poll_delta: dict[tuple, float] = {}
 
-        # stage 1: ingest
+        relevant = []
         for s in samples:
             if s.name not in _FAMILIES:
                 continue
-            lb = s.labels
-            if s.name == REQUESTS and (not _served(lb) or not lb.get("model_id")):
+            if s.name == REQUESTS and (not _served(s.labels) or not s.labels.get("model_id")):
                 continue
-            key = (s.name, *sorted(lb.items()))
-            if acc.last(key) is None and key in self._tombstones:
-                # returning source: continue from where it was dropped (no double count)
-                acc.restore(key, self._tombstones.pop(key), 0.0)
+            relevant.append((s, (s.name, *sorted(s.labels.items()))))
+        self._prune(now, {key for _, key in relevant})
+
+        # stage 1: ingest
+        overflow: dict[tuple, float] = {}
+        for s, key in relevant:
+            lb = s.labels
+            if acc.last(key) is None:
+                if len(self._last_seen) >= self._max_sources:
+                    # No room and live sources are never evicted: remember the value as
+                    # a baseline so the series isn't counted in full once room appears.
+                    overflow[key] = s.value
+                    if not self._warned:
+                        self._warned = True
+                        _LOGGER.warning(
+                            "Too many metric series; ignoring new ones until room frees up"
+                        )
+                    continue
+                if key in self._tombstones:
+                    # returning source: continue from where it was dropped (no double count)
+                    acc.restore(key, self._tombstones.pop(key), 0.0)
+                elif key in self._overflow:
+                    acc.restore(key, self._overflow[key], 0.0)
             before = acc.total(key)
             poll_delta[key] = acc.update(key, s.value)
             added = acc.total(key) - before
@@ -164,6 +187,7 @@ class MetricsProcessor:
                 self._pending_cls[key] += added
                 self._clients[lb.get("client_ip", "None")] += added
         acc.finish_poll()
+        self._overflow = overflow
 
         # stage 2: attribute (all retained sources, including vanished ones)
         served_delta: dict[str, float] = defaultdict(float)
@@ -207,7 +231,6 @@ class MetricsProcessor:
             if n > 0:
                 self._ttft[mid] = t_sums[mid] / n
 
-        self._prune(now)
         return self._build(served_delta, topology)
 
     def _has_pending(self, key: tuple) -> bool:
@@ -223,22 +246,20 @@ class MetricsProcessor:
         while len(self._tombstones) > MAX_TOMBSTONES:
             del self._tombstones[next(iter(self._tombstones))]
 
-    def _prune(self, now: float) -> None:
-        """Bound retained state; sources with pending growth are never dropped."""
-        stale = [
-            k
-            for k, seen in self._last_seen.items()
-            if now - seen > self._retention and not self._has_pending(k)
-        ]
+    def _prune(self, now: float, present: set[tuple]) -> None:
+        """Bound retained state. Only sources absent from the current scrape and with
+        nothing pending are ever dropped; live sources are never evicted.
+        """
+        absent = [k for k in self._last_seen if k not in present and not self._has_pending(k)]
+        stale = [k for k in absent if now - self._last_seen[k] > self._retention]
         for key in stale:
             self._drop(key)
-        excess = len(self._last_seen) - self._max_sources
+        new = sum(1 for k in present if k not in self._last_seen)
+        excess = len(self._last_seen) + new - self._max_sources
         if excess > 0:
-            oldest = sorted(
-                (k for k in self._last_seen if not self._has_pending(k)),
-                key=lambda k: self._last_seen[k],
-            )
-            for key in oldest[:excess]:
+            remaining = [k for k in absent if k in self._last_seen]
+            remaining.sort(key=lambda k: self._last_seen[k])
+            for key in remaining[:excess]:
                 self._drop(key)
 
     def export_state(self) -> dict[str, Any]:
