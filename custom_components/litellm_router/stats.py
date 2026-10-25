@@ -261,14 +261,23 @@ class MetricsProcessor:
             for key in remaining[:excess]:
                 self._drop(key)
 
-    def forget_backend(self, model_id: str) -> None:
+    def forget_backend(self, model_id: str, topology: Topology | None = None) -> None:
         """Drop a removed backend's exposed totals; keep its counter baselines.
 
         Scrapes may still carry the old series, so their last values stay as baselines
         (and tombstones stay): unchanged counters add nothing and a returning backend
         only counts growth from now on.
         """
-        for key in [k for k in self._last_seen if ("model_id", model_id) in k[1:]]:
+        topology = topology or Topology()
+
+        def owned(key: tuple) -> bool:
+            lb = dict(key[1:])
+            if lb.get("model_id"):
+                return lb["model_id"] == model_id
+            # group-keyed sources (e.g. failures): ours if they resolve to us or to nobody
+            return self._resolve(lb, topology) in (None, model_id)
+
+        for key in [k for k in self._last_seen if owned(k)]:
             self._acc.restore(key, self._acc.last(key), 0.0)
             self._pending_attr.pop(key, None)
             self._pending_cls.pop(key, None)

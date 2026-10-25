@@ -103,7 +103,9 @@ async def async_remove_config_entry_device(
         return False
     if runtime:
         for model_id in model_ids:
-            runtime.metrics.processor.forget_backend(model_id)
+            runtime.metrics.processor.forget_backend(
+                model_id, data.topology if data else None
+            )
         await runtime.metrics.async_save_state()
     else:
         # not loaded: clean the stored totals so they don't return on the next setup
