@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -13,6 +13,7 @@ from homeassistant.helpers.device_registry import DeviceEntry
 from .api import LiteLLMClient
 from .const import CONF_API_KEY, CONF_URL, DOMAIN
 from .coordinator import HealthCoordinator, MetricsCoordinator, metrics_store
+from .stats import MetricsProcessor
 
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
@@ -24,6 +25,8 @@ class LiteLLMRuntimeData:
     client: LiteLLMClient
     health: HealthCoordinator
     metrics: MetricsCoordinator
+    # model_ids that already have entities, per platform (cleared on device removal)
+    known: dict[str, set[str]] = field(default_factory=lambda: {p: set() for p in PLATFORMS})
 
 
 type LiteLLMConfigEntry = ConfigEntry[LiteLLMRuntimeData]
@@ -81,5 +84,15 @@ async def async_remove_config_entry_device(
     if runtime:
         for model_id in model_ids:
             runtime.metrics.processor.forget_backend(model_id)
+            for known in runtime.known.values():
+                known.discard(model_id)
         await runtime.metrics.async_save_state()
+    else:
+        # not loaded: clean the stored totals so they don't return on the next setup
+        store = metrics_store(hass, entry.entry_id)
+        processor = MetricsProcessor()
+        if processor.load_state(await store.async_load()):
+            for model_id in model_ids:
+                processor.forget_backend(model_id)
+            await store.async_save(processor.export_state())
     return True

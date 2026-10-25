@@ -22,7 +22,7 @@ async def async_setup_entry(
     """Set up binary sensors, adding backends as they appear."""
     health = entry.runtime_data.health
     async_add_entities([ProxyReachable(health, entry, "proxy_reachable")])
-    known: set[str] = set()
+    known = entry.runtime_data.known["binary_sensor"]
 
     def _add_new() -> None:
         new = set(health.data.backends) - known

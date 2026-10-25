@@ -1,6 +1,7 @@
 """Setup, entities, resets, diagnostics."""
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntryState
@@ -411,6 +412,7 @@ async def test_remove_orphan_backend_device(hass, aioclient_mock, entry) -> None
     nodata = SimpleNamespace(
         entry_id=entry.entry_id,
         runtime_data=SimpleNamespace(
+            known={},
             health=SimpleNamespace(data=None),
             metrics=SimpleNamespace(
                 processor=entry.runtime_data.metrics.processor,
@@ -422,3 +424,66 @@ async def test_remove_orphan_backend_device(hass, aioclient_mock, entry) -> None
     assert not await async_remove_config_entry_device(
         hass, unloaded, SimpleNamespace(identifiers={("other", "x")})
     )
+
+
+async def test_returning_backend_recreates_entities_after_device_removal(
+    hass, aioclient_mock, entry
+) -> None:
+    from custom_components.litellm_router import async_remove_config_entry_device
+
+    mock_proxy(aioclient_mock, metrics_text(req(FAST, "qwen-fast", 7)))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ent, devs = er.async_get(hass), dr.async_get(hass)
+    fast_ident = {(DOMAIN, f"{entry.entry_id}_{FAST}")}
+
+    mock_proxy(
+        aioclient_mock,
+        metrics_text(),
+        health={**HEALTH, "unhealthy_endpoints": []},
+        model_info={"json": {"data": MODEL_INFO["data"][:2]}},
+    )
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    device = devs.async_get_device(fast_ident)
+    assert await async_remove_config_entry_device(hass, entry, device)
+    devs.async_remove_device(device.id)  # real registry removal (removes its entities)
+    await hass.async_block_till_done()
+    assert devs.async_get_device(fast_ident) is None
+    assert not [e for e in ent.entities.values() if FAST in e.unique_id]
+
+    mock_proxy(aioclient_mock, metrics_text())  # backend is back
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert devs.async_get_device(fast_ident) is not None
+    assert state_of(hass, ent, entry, f"{FAST}_healthy").state == "off"
+    assert state_of(hass, ent, entry, f"{FAST}_requests").state == "0"
+
+
+async def test_delete_while_unloaded_cleans_store(
+    hass, aioclient_mock, entry, hass_storage
+) -> None:
+    from custom_components.litellm_router import async_remove_config_entry_device
+
+    mock_proxy(aioclient_mock, metrics_text(req(FAST, "qwen-fast", 7), req(LOCAL, "qwen-local", 2)))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    key = f"{DOMAIN}.{entry.entry_id}"
+    assert FAST in str(hass_storage[key])
+
+    device = SimpleNamespace(identifiers={(DOMAIN, f"{entry.entry_id}_{FAST}")})
+    assert await async_remove_config_entry_device(hass, entry, device)
+    assert FAST not in str(hass_storage[key]) and LOCAL in str(hass_storage[key])
+
+    # no stored state at all: nothing to clean, still allowed
+    del hass_storage[key]
+    assert await async_remove_config_entry_device(hass, entry, device)
+    assert key not in hass_storage
+
+    mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 2)))
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert FAST not in str(entry.runtime_data.metrics.processor.export_state())

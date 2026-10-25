@@ -92,7 +92,7 @@ async def async_setup_entry(
             RequestsByClient(runtime.metrics, entry, "requests_by_client"),
         ]
     )
-    known: set[str] = set()
+    known = entry.runtime_data.known["sensor"]
 
     def _add_new() -> None:
         new = set(runtime.health.data.backends) - known
