@@ -83,3 +83,7 @@ uv venv ~/venvs/litellm-router --python 3.13
 uv pip install --python ~/venvs/litellm-router/bin/python -r requirements_test.txt
 ~/venvs/litellm-router/bin/python -m pytest
 ```
+
+## Credits
+
+The icon and logo are LiteLLM's own artwork (from the [BerriAI/litellm](https://github.com/BerriAI/litellm) repository) and remain the property of their owners. This integration is not affiliated with or endorsed by BerriAI.
