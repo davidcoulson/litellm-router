@@ -60,6 +60,9 @@ Behaviour notes:
   dropped (at most 5000 are kept). A dropped source that returns continues from its last reading. More than 5000
   distinct label sets is unsupported: once the cap is reached new series are ignored (one warning is logged), and
   per-client counts beyond 500 clients are grouped as `other`.
+* Deleting a stale backend device clears that backend's totals; counter baselines are kept so a returning backend only
+  counts new growth. Failure counts that LiteLLM attributes only to a model group (no backend) are group-level and are
+  not cleared when a backend device is deleted.
 * Average latency and time to first token keep their last value during idle polls (an interval with no new requests
   has no average).
 * Series without a `model_id` (the proxy's own health probes) are ignored.

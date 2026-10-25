@@ -267,6 +267,9 @@ class MetricsProcessor:
         Scrapes may still carry the old series, so their last values stay as baselines
         (and tombstones stay): unchanged counters add nothing and a returning backend
         only counts growth from now on.
+
+        Limitation: failure counts that LiteLLM attributes only to a model group (no
+        backend) are group-level and are not cleared when a backend device is deleted.
         """
         for key in [k for k in self._last_seen if ("model_id", model_id) in k[1:]]:
             self._acc.restore(key, self._acc.last(key), 0.0)
