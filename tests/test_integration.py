@@ -402,7 +402,9 @@ async def test_remove_orphan_backend_device(hass, aioclient_mock, entry) -> None
     await advance(hass, 65)
     await hass.async_block_till_done(wait_background_tasks=True)
     assert await async_remove_config_entry_device(hass, entry, fast)
-    assert FAST not in str(entry.runtime_data.metrics.processor.export_state())
+    state = entry.runtime_data.metrics.processor.export_state()
+    assert not [a for a in state["attr"] if a[1] == FAST]  # totals gone, baselines kept
+    assert all(src["total"] == 0 for src in state["sources"] if ["model_id", FAST] in src["key"])
     assert LOCAL in str(entry.runtime_data.metrics.processor.export_state())
 
     # not loaded / no data yet: allowed for backend devices, still refused for the proxy
@@ -528,7 +530,10 @@ async def test_delete_while_unloaded_cleans_store(
 
     device = SimpleNamespace(identifiers={(DOMAIN, f"{entry.entry_id}_{FAST}")})
     assert await async_remove_config_entry_device(hass, entry, device)
-    assert FAST not in str(hass_storage[key]) and LOCAL in str(hass_storage[key])
+    saved = hass_storage[key]["data"]
+    assert not [a for a in saved["attr"] if a[1] == FAST] and [a for a in saved["attr"] if a[1] == LOCAL]
+    fast_src = [src for src in saved["sources"] if ["model_id", FAST] in src["key"]]
+    assert fast_src and all(src["total"] == 0 and src["last"] == 7 for src in fast_src)
 
     # no stored state at all: nothing to clean, still allowed
     del hass_storage[key]
@@ -538,4 +543,6 @@ async def test_delete_while_unloaded_cleans_store(
     mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 2)))
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert FAST not in str(entry.runtime_data.metrics.processor.export_state())
+    state = entry.runtime_data.metrics.processor.export_state()
+    assert not [a for a in state["attr"] if a[1] == FAST]  # totals gone, baselines kept
+    assert all(src["total"] == 0 for src in state["sources"] if ["model_id", FAST] in src["key"])

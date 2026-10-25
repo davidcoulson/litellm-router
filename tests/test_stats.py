@@ -408,20 +408,56 @@ def test_tombstone_eviction_makes_unknown_sources_baselines(monkeypatch) -> None
     assert run(p, 100, tok("A")).backends[LOCAL].tokens_in == 300
 
 
-def test_forget_backend_starts_fresh() -> None:
+def _tok(mid, v):
+    return metric("litellm_input_tokens_metric_total", mid, v)
+
+
+def _run(p, now, *ls):
+    return p.process(parse_prometheus(metrics_text(*ls)), TOPO, now=now)
+
+
+def test_forget_backend_keeps_baselines() -> None:
     p = MetricsProcessor(retention=1)
-    tok = lambda mid, v: metric("litellm_input_tokens_metric_total", mid, v)  # noqa: E731
-    p.process(
-        parse_prometheus(metrics_text(tok(LOCAL, 10), tok(FAST, 20), req(FAST, "qwen-fast", 3))),
-        TOPO,
-        now=0,
-    )
-    p.process(
-        parse_prometheus(metrics_text(tok(LOCAL, 10))), TOPO, now=100
-    )  # FAST dropped -> tombstones
-    p.process(parse_prometheus(metrics_text(tok(LOCAL, 10), tok(FAST, 20))), TOPO, now=101)
+    _run(p, 0, _tok(LOCAL, 10), _tok(FAST, 20), req(FAST, "qwen-fast", 7))
+    _run(p, 100, _tok(LOCAL, 10))  # FAST series dropped -> tombstones
+    _run(p, 101, _tok(LOCAL, 10), _tok(FAST, 20), req(FAST, "qwen-fast", 7))
     p.forget_backend(FAST)
     p.forget_backend(FAST)
-    d = p.process(parse_prometheus(metrics_text(tok(LOCAL, 10))), TOPO, now=102)
-    assert FAST not in d.backends and d.backends[LOCAL].tokens_in == 10
-    assert not [k for k in p._tombstones if ("model_id", FAST) in k[1:]]
+    assert [k for k in p._tombstones if ("model_id", FAST) in k[1:]] == []  # none left to keep
+    d = _run(p, 102, _tok(LOCAL, 10), _tok(FAST, 20), req(FAST, "qwen-fast", 7))
+    assert d.backends[LOCAL].tokens_in == 10
+    assert d.backends.get(FAST, BackendStats()).tokens_in == 0
+    assert sum(d.clients.values()) <= 7  # no re-added requests
+
+
+def test_unchanged_scrape_after_removal_adds_nothing() -> None:
+    p = MetricsProcessor()
+    d = _run(p, 0, req(FAST, "qwen-fast", 7, client="10.0.0.8"), _tok(FAST, 20))
+    p.forget_backend(FAST)
+    for t in (1, 2):
+        d = _run(p, t, req(FAST, "qwen-fast", 7, client="10.0.0.8"), _tok(FAST, 20))
+        assert d.backends.get(FAST, BackendStats()).tokens_in == 0
+        assert d.backends.get(FAST, BackendStats()).requests == 0
+        assert d.clients["10.0.0.8"] == 7  # history kept, not re-added
+
+
+def test_scrape_completing_during_removal_and_growth_counts_delta() -> None:
+    p = MetricsProcessor()
+    _run(p, 0, req(FAST, "qwen-fast", 7, client="10.0.0.8"), _tok(FAST, 20))
+    _run(p, 1, req(FAST, "qwen-fast", 7, client="10.0.0.8"), _tok(FAST, 20))  # mid-removal scrape
+    p.forget_backend(FAST)
+    d = _run(p, 2, req(FAST, "qwen-fast", 7, client="10.0.0.8"), _tok(FAST, 20))
+    assert d.backends.get(FAST, BackendStats()).requests == 0
+    d = _run(p, 3, req(FAST, "qwen-fast", 9, client="10.0.0.8"), _tok(FAST, 25))
+    assert d.backends[FAST].requests == 2 and d.backends[FAST].tokens_in == 5
+    assert d.clients["10.0.0.8"] == 9  # 7 before removal + 2 new, never doubled
+
+
+def test_baselines_survive_persistence_after_removal() -> None:
+    p = MetricsProcessor()
+    _run(p, 0, req(FAST, "qwen-fast", 7), _tok(FAST, 20))
+    p.forget_backend(FAST)
+    p2 = MetricsProcessor()
+    assert p2.load_state(_json_roundtrip(p))
+    d = _run(p2, 1, req(FAST, "qwen-fast", 7), _tok(FAST, 20))
+    assert d.backends.get(FAST, BackendStats()).requests == 0
