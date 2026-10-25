@@ -22,6 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 RETENTION_SECONDS = 24 * 3600
 MAX_SOURCES = 5000
 MAX_TOMBSTONES = 5000
+MAX_CLIENTS = 500
 STATE_VERSION = 1
 
 REQUESTS = "litellm_proxy_total_requests_metric_total"
@@ -122,8 +123,7 @@ class MetricsProcessor:
         self._pending_cls: dict[tuple, float] = defaultdict(float)
         self._last_seen: dict[tuple, float] = {}
         self._tombstones: dict[tuple, float] = {}
-        self._overflow: dict[tuple, float] = {}
-        self._warned = False
+        self._saturated = False
 
     @property
     def source_count(self) -> int:
@@ -158,25 +158,21 @@ class MetricsProcessor:
         self._prune(now, {key for _, key in relevant})
 
         # stage 1: ingest
-        overflow: dict[tuple, float] = {}
         for s, key in relevant:
             lb = s.labels
             if acc.last(key) is None:
                 if len(self._last_seen) >= self._max_sources:
-                    # No room and live sources are never evicted: remember the value as
-                    # a baseline so the series isn't counted in full once room appears.
-                    overflow[key] = s.value
-                    if not self._warned:
-                        self._warned = True
-                        _LOGGER.warning(
-                            "Too many metric series; ignoring new ones until room frees up"
-                        )
+                    # At the cap live sources are never evicted: ignore new ones entirely.
+                    if not self._saturated:
+                        self._saturated = True
+                        _LOGGER.warning("Too many metric series; ignoring new ones")
                     continue
                 if key in self._tombstones:
                     # returning source: continue from where it was dropped (no double count)
                     acc.restore(key, self._tombstones.pop(key), 0.0)
-                elif key in self._overflow:
-                    acc.restore(key, self._overflow[key], 0.0)
+                elif self._saturated:
+                    # after saturation we can't tell new from returning: first sample is a baseline
+                    acc.restore(key, s.value, 0.0)
             before = acc.total(key)
             poll_delta[key] = acc.update(key, s.value)
             added = acc.total(key) - before
@@ -185,9 +181,11 @@ class MetricsProcessor:
                 self._pending_attr[key] += added
             if s.name == REQUESTS:
                 self._pending_cls[key] += added
-                self._clients[lb.get("client_ip", "None")] += added
+                client = lb.get("client_ip", "None")
+                if client not in self._clients and len(self._clients) >= MAX_CLIENTS:
+                    client = "other"
+                self._clients[client] += added
         acc.finish_poll()
-        self._overflow = overflow
 
         # stage 2: attribute (all retained sources, including vanished ones)
         served_delta: dict[str, float] = defaultdict(float)
@@ -268,6 +266,7 @@ class MetricsProcessor:
         return {
             "version": STATE_VERSION,
             "primed": acc.primed,
+            "saturated": self._saturated,
             "sources": [
                 {
                     "key": [key[0], *[list(p) for p in key[1:]]],
@@ -317,6 +316,7 @@ class MetricsProcessor:
             if src["pc"]:
                 self._pending_cls[key] = float(src["pc"])
         self._acc.set_primed(bool(data["primed"]))
+        self._saturated = bool(data["saturated"])
         for raw, last in data["tombstones"]:
             self._tombstones[to_key(raw)] = float(last)
         for name, mid, value in data["attr"]:

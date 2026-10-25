@@ -357,12 +357,35 @@ def test_live_series_over_caps_never_change_totals(monkeypatch) -> None:
     )
 
 
-def test_overflow_series_admitted_with_baseline_when_room_frees() -> None:
-    p = MetricsProcessor(retention=10**9, max_sources=2)
+def _bounded(p, cap):
+    for name in ("_last_seen", "_pending_attr", "_pending_cls", "_tombstones", "_clients"):
+        assert len(getattr(p, name)) <= cap, name
+    assert len(p._acc._last) <= cap and len(p._acc._total) <= cap
+
+
+def test_high_cardinality_keeps_every_map_bounded(monkeypatch) -> None:
+    from custom_components.litellm_router import stats
+
+    monkeypatch.setattr(stats, "MAX_TOMBSTONES", 5)
+    monkeypatch.setattr(stats, "MAX_CLIENTS", 3)
+    p = MetricsProcessor(retention=10**9, max_sources=5)
+    tok = lambda k: metric("litellm_input_tokens_metric_total", LOCAL, 100, k=k)  # noqa: E731
+    reqs = [req(LOCAL, "qwen-local", 1, client=f"c{i}") for i in range(2000)]
+    for n in range(3):
+        d = p.process(
+            parse_prometheus(metrics_text(*reqs, *[tok(i) for i in range(2000)])), TOPO, now=n
+        )
+        _bounded(p, 5)
+    assert d.backends[LOCAL].tokens_in <= 500 and p._saturated
+    assert len(d.clients) <= 4  # three clients plus "other"
+
+
+def test_saturated_roundtrip_keeps_totals_and_new_is_baseline() -> None:
+    p = MetricsProcessor(max_sources=1)
     tok = lambda k, v: metric("litellm_input_tokens_metric_total", LOCAL, v, k=k)  # noqa: E731
-    run = lambda now, *ls: p.process(parse_prometheus(metrics_text(*ls)), TOPO, now=now)  # noqa: E731
-    run(0, tok("A", 10), tok("B", 10), tok("C", 5))
-    d = run(1, tok("A", 10), tok("B", 10), tok("C", 7))
-    assert d.backends[LOCAL].tokens_in == 20
-    d = run(2, tok("A", 10), tok("C", 9))  # B gone: room for C, counted from its baseline 7
-    assert d.backends[LOCAL].tokens_in == 22
+    run = lambda proc, now, *ls: proc.process(parse_prometheus(metrics_text(*ls)), TOPO, now=now)  # noqa: E731
+    run(p, 0, tok("A", 10), tok("B", 100))  # B ignored
+    p2 = MetricsProcessor(max_sources=1)
+    assert p2.load_state(_json_roundtrip(p))
+    assert run(p2, 1, tok("B", 100)).backends[LOCAL].tokens_in == 10  # A absent -> B baseline
+    assert run(p2, 2, tok("B", 130)).backends[LOCAL].tokens_in == 40

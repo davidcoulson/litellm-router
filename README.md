@@ -57,7 +57,9 @@ Behaviour notes:
   (Home Assistant storage, deleted with the entry) and restored on reload and restart, so they continue where they
   were; only a first-ever setup starts from the proxy's current counters.
 * Per-source counter state is bounded: sources unseen for 24 h with nothing pending are rolled into the totals and
-  dropped (at most 5000 are kept). A dropped source that returns continues from its last reading.
+  dropped (at most 5000 are kept). A dropped source that returns continues from its last reading. More than 5000
+  distinct label sets is unsupported: once the cap is reached new series are ignored (one warning is logged), and
+  per-client counts beyond 500 clients are grouped as `other`.
 * Average latency and time to first token keep their last value during idle polls (an interval with no new requests
   has no average).
 * Series without a `model_id` (the proxy's own health probes) are ignored.
