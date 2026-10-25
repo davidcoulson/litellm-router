@@ -17,7 +17,7 @@ HACS: add this repository as a custom repository (category Integration), install
 Home Assistant. Manual: copy `custom_components/litellm_router` into your `config/custom_components/` and restart.
 
 Then Settings > Devices & services > Add integration > **LiteLLM Router**, and enter the proxy URL
-(for example `http://10.2.6.57:4000`) and the API key. The key is validated against `/health/liveliness` and
+(for example `http://litellm.local:4000`) and the API key. The key is validated against `/health/liveliness` and
 `/metrics/`. If the key is later rejected, Home Assistant starts a re-authentication flow.
 
 To change the URL or key later, use Reconfigure on the integration (leave the key empty to keep it).
