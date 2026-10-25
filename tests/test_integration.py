@@ -18,6 +18,7 @@ from .conftest import (
     FAST,
     HEALTH,
     LOCAL,
+    MODEL_INFO,
     URL,
     metric,
     metrics_text,
@@ -368,3 +369,56 @@ async def test_checkpoints_written_during_fast_polling(hass, aioclient_mock, has
         await hass.async_block_till_done(wait_background_tasks=True)
     assert hass_storage[key]["data"]["attr"]
     await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_remove_orphan_backend_device(hass, aioclient_mock, entry) -> None:
+    from types import SimpleNamespace
+
+    from custom_components.litellm_router import async_remove_config_entry_device
+
+    mock_proxy(aioclient_mock, metrics_text(req(LOCAL, "qwen-local", 5), req(FAST, "qwen-fast", 7)))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ent = er.async_get(hass)
+    devs = dr.async_get(hass)
+    proxy = devs.async_get_device({(DOMAIN, entry.entry_id)})
+    local = devs.async_get_device({(DOMAIN, f"{entry.entry_id}_{LOCAL}")})
+    fast = devs.async_get_device({(DOMAIN, f"{entry.entry_id}_{FAST}")})
+    assert not await async_remove_config_entry_device(hass, entry, proxy)
+    assert not await async_remove_config_entry_device(hass, entry, local)
+    assert not await async_remove_config_entry_device(hass, entry, fast)  # still configured
+    assert state_of(hass, ent, entry, f"{FAST}_requests").state == "7"
+
+    # FAST is removed from the proxy
+    health = {**HEALTH, "unhealthy_endpoints": []}
+    mock_proxy(
+        aioclient_mock,
+        metrics_text(req(LOCAL, "qwen-local", 5)),
+        health=health,
+        model_info={"json": {"data": MODEL_INFO["data"][:2]}},
+    )
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert await async_remove_config_entry_device(hass, entry, fast)
+    assert FAST not in str(entry.runtime_data.metrics.processor.export_state())
+    assert LOCAL in str(entry.runtime_data.metrics.processor.export_state())
+
+    # not loaded / no data yet: allowed for backend devices, still refused for the proxy
+    foreign = SimpleNamespace(identifiers={(DOMAIN, f"{entry.entry_id}_{FAST}")})
+    unloaded = SimpleNamespace(entry_id=entry.entry_id)
+    assert await async_remove_config_entry_device(hass, unloaded, foreign)
+    nodata = SimpleNamespace(
+        entry_id=entry.entry_id,
+        runtime_data=SimpleNamespace(
+            health=SimpleNamespace(data=None),
+            metrics=SimpleNamespace(
+                processor=entry.runtime_data.metrics.processor,
+                async_save_state=entry.runtime_data.metrics.async_save_state,
+            ),
+        ),
+    )
+    assert await async_remove_config_entry_device(hass, nodata, foreign)
+    assert not await async_remove_config_entry_device(
+        hass, unloaded, SimpleNamespace(identifiers={("other", "x")})
+    )

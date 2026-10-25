@@ -261,6 +261,20 @@ class MetricsProcessor:
             for key in remaining[:excess]:
                 self._drop(key)
 
+    def forget_backend(self, model_id: str) -> None:
+        """Drop all state of a removed backend; if it returns it starts fresh."""
+        for key in [k for k in self._last_seen if ("model_id", model_id) in k[1:]]:
+            self._acc.forget(key)
+            self._last_seen.pop(key, None)
+            self._pending_attr.pop(key, None)
+            self._pending_cls.pop(key, None)
+        for key in [k for k in self._tombstones if ("model_id", model_id) in k[1:]]:
+            del self._tombstones[key]
+        for attr in [a for a in self._attr if a[1] == model_id]:
+            del self._attr[attr]
+        self._latency.pop(model_id, None)
+        self._ttft.pop(model_id, None)
+
     def export_state(self) -> dict[str, Any]:
         """Return JSON-serialisable state."""
         acc = self._acc

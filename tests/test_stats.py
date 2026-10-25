@@ -406,3 +406,22 @@ def test_tombstone_eviction_makes_unknown_sources_baselines(monkeypatch) -> None
     assert p2.load_state(_json_roundtrip(p))
     assert run(p2, 100, tok("A")).backends[LOCAL].tokens_in == 300  # evicted A returns unchanged
     assert run(p, 100, tok("A")).backends[LOCAL].tokens_in == 300
+
+
+def test_forget_backend_starts_fresh() -> None:
+    p = MetricsProcessor(retention=1)
+    tok = lambda mid, v: metric("litellm_input_tokens_metric_total", mid, v)  # noqa: E731
+    p.process(
+        parse_prometheus(metrics_text(tok(LOCAL, 10), tok(FAST, 20), req(FAST, "qwen-fast", 3))),
+        TOPO,
+        now=0,
+    )
+    p.process(
+        parse_prometheus(metrics_text(tok(LOCAL, 10))), TOPO, now=100
+    )  # FAST dropped -> tombstones
+    p.process(parse_prometheus(metrics_text(tok(LOCAL, 10), tok(FAST, 20))), TOPO, now=101)
+    p.forget_backend(FAST)
+    p.forget_backend(FAST)
+    d = p.process(parse_prometheus(metrics_text(tok(LOCAL, 10))), TOPO, now=102)
+    assert FAST not in d.backends and d.backends[LOCAL].tokens_in == 10
+    assert not [k for k in p._tombstones if ("model_id", FAST) in k[1:]]

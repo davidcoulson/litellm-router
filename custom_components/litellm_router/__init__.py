@@ -8,9 +8,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.device_registry import DeviceEntry
 
 from .api import LiteLLMClient
-from .const import CONF_API_KEY, CONF_URL
+from .const import CONF_API_KEY, CONF_URL, DOMAIN
 from .coordinator import HealthCoordinator, MetricsCoordinator, metrics_store
 
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
@@ -59,3 +60,26 @@ async def async_unload_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> 
 async def async_remove_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> None:
     """Delete the stored totals when the entry is removed."""
     await metrics_store(hass, entry.entry_id).async_remove()
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: LiteLLMConfigEntry, device_entry: DeviceEntry
+) -> bool:
+    """Allow deleting devices of backends that no longer exist (never the proxy)."""
+    prefix = f"{entry.entry_id}_"
+    model_ids = {
+        ident[len(prefix) :]
+        for domain, ident in device_entry.identifiers
+        if domain == DOMAIN and ident.startswith(prefix)
+    }
+    if not model_ids:
+        return False  # the proxy device (or not ours)
+    runtime = getattr(entry, "runtime_data", None)
+    data = runtime.health.data if runtime else None
+    if data is not None and model_ids & set(data.backends):
+        return False
+    if runtime:
+        for model_id in model_ids:
+            runtime.metrics.processor.forget_backend(model_id)
+        await runtime.metrics.async_save_state()
+    return True
