@@ -269,6 +269,27 @@ async def test_setup_with_health_timing_out(hass, aioclient_mock, entry) -> None
     assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "4"
 
 
+async def test_health_timeout_keeps_last_data_for_three_polls(hass, aioclient_mock, entry) -> None:
+    mock_proxy(aioclient_mock, metrics_text())
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ent = er.async_get(hass)
+    assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == "on"
+
+    expected = ["on", "on", "on", "unavailable"]
+    for want in expected:
+        mock_proxy(aioclient_mock, metrics_text(), health_ep={"exc": TimeoutError()})
+        await advance(hass, 65)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == want
+
+    mock_proxy(aioclient_mock, metrics_text())
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == "on"
+
+
 async def test_totals_survive_reload_and_pending_too(
     hass, aioclient_mock, entry, hass_storage
 ) -> None:
