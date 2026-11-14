@@ -56,22 +56,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> b
         # Only once a device is really gone can its entities be recreated for a returning backend.
         if event.data["action"] != "remove":
             return
-        registry = dr.async_get(hass)
+        # Iterate instead of async_get_device_by_identifier, which needs newer HA than hacs.json allows.
+        identifiers = {
+            i
+            for d in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+            for i in d.identifiers
+        }
         for known in runtime.known.values():
             for model_id in list(known):
-                if registry.async_get_device({(DOMAIN, f"{entry.entry_id}_{model_id}")}) is None:
+                if (DOMAIN, f"{entry.entry_id}_{model_id}") not in identifiers:
                     known.discard(model_id)
         for discover in runtime.rediscover:
             discover()
 
     entry.async_on_unload(hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _device_registry_updated))
-    entry.async_on_unload(entry.add_update_listener(_async_reload))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
-
-
-async def _async_reload(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> bool:

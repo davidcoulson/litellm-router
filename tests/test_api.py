@@ -62,6 +62,7 @@ async def test_requests(hass, aioclient_mock) -> None:
         ({"status": 500}, LiteLLMConnectionError),
         ({"exc": aiohttp.ClientError("boom")}, LiteLLMConnectionError),
         ({"exc": TimeoutError()}, LiteLLMConnectionError),
+        ({"exc": ValueError("credentials in URL")}, LiteLLMConnectionError),
     ],
 )
 async def test_errors(hass, aioclient_mock, kwargs, exc) -> None:
@@ -96,3 +97,12 @@ def test_sanitize_url() -> None:
     assert sanitize_url("http://[::1]:8/p") == "http://[::1]:8/p"
     assert sanitize_url("http://u:p@h") == "http://h"
     assert sanitize_url("http://h:notaport/") == "**INVALID_URL**"
+
+
+async def test_query_stays_after_endpoint_path(hass, aioclient_mock) -> None:
+    from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+    c = LiteLLMClient(async_get_clientsession(hass), f"{URL}/api?x=1#frag", API_KEY)
+    aioclient_mock.get(f"{URL}/api/health/liveliness?x=1", text="ok")
+    await c.liveliness()
+    assert str(aioclient_mock.mock_calls[0][1]) == f"{URL}/api/health/liveliness?x=1"

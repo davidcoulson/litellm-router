@@ -32,12 +32,12 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: LiteLLMConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics with the API key redacted."""
-    runtime = entry.runtime_data
+    runtime = getattr(entry, "runtime_data", None)  # absent when setup failed or unloaded
     return _sanitize(
         {
             "entry": async_redact_data(dict(entry.data), TO_REDACT),
             "options": dict(entry.options),
-            "health": asdict(runtime.health.data) if runtime.health.data else None,
-            "metrics": asdict(runtime.metrics.data) if runtime.metrics.data else None,
+            "health": asdict(runtime.health.data) if runtime and runtime.health.data else None,
+            "metrics": asdict(runtime.metrics.data) if runtime and runtime.metrics.data else None,
         }
     )

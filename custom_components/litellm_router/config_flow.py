@@ -10,7 +10,7 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
-    OptionsFlow,
+    OptionsFlowWithReload,
 )
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -43,6 +43,7 @@ async def _validate(hass: Any, url: str, api_key: str) -> str | None:
     try:
         await client.liveliness()
         await client.metrics()
+        await client.model_info()  # needs the key; liveliness and metrics may not
     except LiteLLMAuthError:
         return "invalid_auth"
     except LiteLLMConnectionError:
@@ -144,12 +145,12 @@ class LiteLLMRouterConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlowWithReload:
         """Return the options flow."""
         return LiteLLMRouterOptionsFlow()
 
 
-class LiteLLMRouterOptionsFlow(OptionsFlow):
+class LiteLLMRouterOptionsFlow(OptionsFlowWithReload):
     """Poll interval options."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

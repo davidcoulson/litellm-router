@@ -77,10 +77,8 @@ async def test_entities_and_updates(hass, aioclient_mock, entry) -> None:
     )
 
     devs = dr.async_get(hass)
-    assert (
-        len([d for d in devs.devices.values() if any(i[0] == DOMAIN for i in d.identifiers)]) == 4
-    )
-    local_dev = devs.async_get_device({(DOMAIN, f"{entry.entry_id}_{LOCAL}")})
+    assert len(dr.async_entries_for_config_entry(devs, entry.entry_id)) == 4
+    local_dev = devs.async_get_device_by_identifier((DOMAIN, f"{entry.entry_id}_{LOCAL}"), entry.entry_id)
     assert local_dev.name == "qwen-local" and local_dev.via_device_id
 
     # traffic, including a fallback
@@ -269,6 +267,27 @@ async def test_setup_with_health_timing_out(hass, aioclient_mock, entry) -> None
     assert state_of(hass, ent, entry, f"{LOCAL}_requests").state == "4"
 
 
+async def test_health_timeout_keeps_last_data_for_three_polls(hass, aioclient_mock, entry) -> None:
+    mock_proxy(aioclient_mock, metrics_text())
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ent = er.async_get(hass)
+    assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == "on"
+
+    expected = ["on", "on", "on", "unavailable"]
+    for want in expected:
+        mock_proxy(aioclient_mock, metrics_text(), health_ep={"exc": TimeoutError()})
+        await advance(hass, 65)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == want
+
+    mock_proxy(aioclient_mock, metrics_text())
+    await advance(hass, 65)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert state_of(hass, ent, entry, f"{LOCAL}_healthy").state == "on"
+
+
 async def test_totals_survive_reload_and_pending_too(
     hass, aioclient_mock, entry, hass_storage
 ) -> None:
@@ -345,7 +364,7 @@ async def test_urls_are_sanitized_in_diagnostics_and_attributes(hass, aioclient_
     ent = er.async_get(hass)
     st = state_of(hass, ent, e, f"{LOCAL}_healthy")
     assert st.attributes["api_base"] == "http://strata/v1?api_key=**REDACTED**"
-    dev = dr.async_get(hass).async_get_device({(DOMAIN, e.entry_id)})
+    dev = dr.async_get(hass).async_get_device_by_identifier((DOMAIN, e.entry_id), e.entry_id)
     assert dev.configuration_url == "http://litellm.test:4000"
 
 
@@ -383,9 +402,9 @@ async def test_remove_orphan_backend_device(hass, aioclient_mock, entry) -> None
     await hass.async_block_till_done(wait_background_tasks=True)
     ent = er.async_get(hass)
     devs = dr.async_get(hass)
-    proxy = devs.async_get_device({(DOMAIN, entry.entry_id)})
-    local = devs.async_get_device({(DOMAIN, f"{entry.entry_id}_{LOCAL}")})
-    fast = devs.async_get_device({(DOMAIN, f"{entry.entry_id}_{FAST}")})
+    proxy = devs.async_get_device_by_identifier((DOMAIN, entry.entry_id), entry.entry_id)
+    local = devs.async_get_device_by_identifier((DOMAIN, f"{entry.entry_id}_{LOCAL}"), entry.entry_id)
+    fast = devs.async_get_device_by_identifier((DOMAIN, f"{entry.entry_id}_{FAST}"), entry.entry_id)
     assert not await async_remove_config_entry_device(hass, entry, proxy)
     assert not await async_remove_config_entry_device(hass, entry, local)
     assert not await async_remove_config_entry_device(hass, entry, fast)  # still configured
@@ -438,7 +457,7 @@ async def test_returning_backend_recreates_entities_after_device_removal(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
     ent, devs = er.async_get(hass), dr.async_get(hass)
-    fast_ident = {(DOMAIN, f"{entry.entry_id}_{FAST}")}
+    fast_ident = (DOMAIN, f"{entry.entry_id}_{FAST}")
 
     mock_proxy(
         aioclient_mock,
@@ -448,17 +467,17 @@ async def test_returning_backend_recreates_entities_after_device_removal(
     )
     await advance(hass, 65)
     await hass.async_block_till_done(wait_background_tasks=True)
-    device = devs.async_get_device(fast_ident)
+    device = devs.async_get_device_by_identifier(fast_ident, entry.entry_id)
     assert await async_remove_config_entry_device(hass, entry, device)
     devs.async_remove_device(device.id)  # real registry removal (removes its entities)
     await hass.async_block_till_done()
-    assert devs.async_get_device(fast_ident) is None
+    assert devs.async_get_device_by_identifier(fast_ident, entry.entry_id) is None
     assert not [e for e in ent.entities.values() if FAST in e.unique_id]
 
     mock_proxy(aioclient_mock, metrics_text())  # backend is back
     await advance(hass, 65)
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert devs.async_get_device(fast_ident) is not None
+    assert devs.async_get_device_by_identifier(fast_ident, entry.entry_id) is not None
     assert state_of(hass, ent, entry, f"{FAST}_healthy").state == "off"
     assert state_of(hass, ent, entry, f"{FAST}_requests").state == "0"
 
@@ -476,7 +495,7 @@ async def test_backend_returning_during_removal_save_is_rediscovered(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
     ent, devs = er.async_get(hass), dr.async_get(hass)
-    fast_ident = {(DOMAIN, f"{entry.entry_id}_{FAST}")}
+    fast_ident = (DOMAIN, f"{entry.entry_id}_{FAST}")
 
     mock_proxy(
         aioclient_mock,
@@ -486,7 +505,7 @@ async def test_backend_returning_during_removal_save_is_rediscovered(
     )
     await advance(hass, 65)
     await hass.async_block_till_done(wait_background_tasks=True)
-    device = devs.async_get_device(fast_ident)
+    device = devs.async_get_device_by_identifier(fast_ident, entry.entry_id)
 
     gate = asyncio.Event()
     save = entry.runtime_data.metrics.async_save_state
@@ -511,7 +530,7 @@ async def test_backend_returning_during_removal_save_is_rediscovered(
     devs.async_remove_device(device.id)  # now the real registry removal
     await hass.async_block_till_done(wait_background_tasks=True)
 
-    assert devs.async_get_device(fast_ident) is not None
+    assert devs.async_get_device_by_identifier(fast_ident, entry.entry_id) is not None
     assert state_of(hass, ent, entry, f"{FAST}_healthy").state == "off"
 
 
@@ -546,3 +565,10 @@ async def test_delete_while_unloaded_cleans_store(
     state = entry.runtime_data.metrics.processor.export_state()
     assert not [a for a in state["attr"] if a[1] == FAST]  # totals gone, baselines kept
     assert all(src["total"] == 0 for src in state["sources"] if ["model_id", FAST] in src["key"])
+
+
+async def test_diagnostics_without_runtime_data(hass, entry) -> None:
+    entry.add_to_hass(hass)
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    assert diag["health"] is None and diag["metrics"] is None
+    assert diag["entry"]["api_key"] == "**REDACTED**"

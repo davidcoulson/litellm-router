@@ -31,6 +31,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CHECKPOINT_INTERVAL = timedelta(seconds=60)
 STORE_VERSION = 1
+MAX_STALE_HEALTH_POLLS = 3  # timed-out /health polls tolerated before backends go unavailable
 
 
 def metrics_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
@@ -75,6 +76,7 @@ class HealthCoordinator(DataUpdateCoordinator[HealthData]):
         )
         self.client = client
         self._fallbacks: dict[str, list[str]] = {}
+        self._health_timeouts = 0
 
     async def _async_update_data(self) -> HealthData:
         try:
@@ -92,8 +94,20 @@ class HealthCoordinator(DataUpdateCoordinator[HealthData]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except LiteLLMConnectionError as err:
             _LOGGER.debug("Backend health unavailable: %s", err)
+            prev = self.data
+            if (
+                isinstance(err.__cause__, TimeoutError)
+                and prev
+                and prev.reachable
+                and prev.backends_ok
+                and self._health_timeouts < MAX_STALE_HEALTH_POLLS
+            ):
+                # One slow backend makes /health time out: keep the last data for a few polls.
+                self._health_timeouts += 1
+                return prev
             # Proxy is alive: publish that, and only blank the backend entities.
             return HealthData(True, Health(), self._previous_topology(), backends_ok=False)
+        self._health_timeouts = 0
         if fallbacks is not None:  # keep the last good config through /router/settings outages
             self._fallbacks = fallbacks
         return HealthData(True, health, Topology(models, self._fallbacks))
