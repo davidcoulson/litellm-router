@@ -546,3 +546,10 @@ async def test_delete_while_unloaded_cleans_store(
     state = entry.runtime_data.metrics.processor.export_state()
     assert not [a for a in state["attr"] if a[1] == FAST]  # totals gone, baselines kept
     assert all(src["total"] == 0 for src in state["sources"] if ["model_id", FAST] in src["key"])
+
+
+async def test_diagnostics_without_runtime_data(hass, entry) -> None:
+    entry.add_to_hass(hass)
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    assert diag["health"] is None and diag["metrics"] is None
+    assert diag["entry"]["api_key"] == "**REDACTED**"
