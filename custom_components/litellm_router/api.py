@@ -145,15 +145,18 @@ class LiteLLMClient:
         self._headers = {"Authorization": f"Bearer {api_key}"}
 
     async def _get(self, path: str, timeout: int = REQUEST_TIMEOUT) -> tuple[int, str]:
+        base = urlsplit(self._url)
+        # Keep any query on the base URL after the endpoint path; drop the fragment.
+        url = urlunsplit(base._replace(path=base.path.rstrip("/") + path, fragment=""))
         try:
             async with self._session.get(
-                f"{self._url}{path}",
+                url,
                 headers=self._headers,
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
                 text = await resp.text()
                 status = resp.status
-        except (aiohttp.ClientError, TimeoutError) as err:
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             raise LiteLLMConnectionError(str(err) or type(err).__name__) from err
         if status in (401, 403):
             raise LiteLLMAuthError(f"HTTP {status}")
