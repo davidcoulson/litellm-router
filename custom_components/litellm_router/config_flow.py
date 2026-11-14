@@ -43,6 +43,7 @@ async def _validate(hass: Any, url: str, api_key: str) -> str | None:
     try:
         await client.liveliness()
         await client.metrics()
+        await client.model_info()  # needs the key; liveliness and metrics may not
     except LiteLLMAuthError:
         return "invalid_auth"
     except LiteLLMConnectionError:

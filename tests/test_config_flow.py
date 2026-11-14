@@ -123,8 +123,8 @@ async def test_reconfigure_duplicate_and_id_moves(hass, aioclient_mock, entry) -
 
     # move entry from URL to a new address (no setup, so no reload side effects)
     new = "http://moved.test:4000"
-    for path in ("/health/liveliness", "/metrics/"):
-        aioclient_mock.get(f"{new}{path}", text="")
+    for path in ("/health/liveliness", "/metrics/", "/model/info"):
+        aioclient_mock.get(f"{new}{path}", text="{}")
     r = await entry.start_reconfigure_flow(hass)
     r = await hass.config_entries.flow.async_configure(r["flow_id"], {"url": new})
     assert r["reason"] == "reconfigure_successful"
@@ -207,3 +207,12 @@ async def test_concurrent_reconfigure_same_url(hass, monkeypatch) -> None:
     assert sorted(r["reason"] for r in results) == ["already_configured", "reconfigure_successful"]
     assert sorted(e.unique_id for e in entries).count("http://same:1") == 1
     await hass.async_block_till_done()
+
+
+async def test_user_flow_rejects_key_refused_by_model_info(hass, aioclient_mock) -> None:
+    mock_proxy(aioclient_mock, model_info={"status": 401})
+    r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    r = await hass.config_entries.flow.async_configure(
+        r["flow_id"], {"url": URL, "api_key": "bad"}
+    )
+    assert r["errors"] == {"base": "invalid_auth"}
