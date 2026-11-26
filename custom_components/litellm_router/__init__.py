@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+import importlib
+import sys
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, ServiceCall, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceEntry
+from homeassistant.helpers.service import async_register_admin_service
+from homeassistant.loader import async_get_integration
 
 from .api import LiteLLMClient
 from .const import CONF_API_KEY, CONF_URL, DOMAIN
@@ -71,6 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> b
 
     entry.async_on_unload(hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _device_registry_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    _register_reload_code(hass)
     return True
 
 
@@ -114,3 +120,39 @@ async def async_remove_config_entry_device(
                 processor.forget_backend(model_id)
             await store.async_save(processor.export_state())
     return True
+
+
+def _forget_code(hass: HomeAssistant, package: str, domain: str) -> None:
+    """Drop a package's modules so the next setup imports them from disk again.
+
+    Home Assistant keeps its own copy of each imported integration module
+    (hass.data["components"], keyed "<domain>" and "<domain>.<platform>") next to
+    sys.modules; both have to go.
+    """
+    for cache, root in ((sys.modules, package), (hass.data.get("components", {}), domain),
+                        (hass.data.get("missing_platforms", {}), domain)):
+        for key in [n for n in cache if n == root or n.startswith(root + ".")]:
+            del cache[key]
+    importlib.invalidate_caches()  # or a file added since the last import may not be found
+
+
+def _register_reload_code(hass: HomeAssistant) -> None:
+    """Dev: litellm_router.reload_code loads the Python files from disk without a restart."""
+
+    async def _reload_code(call: ServiceCall) -> None:
+        entries = hass.config_entries.async_entries(DOMAIN)
+        for entry in entries:
+            if not await hass.config_entries.async_unload(entry.entry_id):
+                raise HomeAssistantError(f"{DOMAIN} did not unload; restart Home Assistant instead")
+        _forget_code(hass, __name__, DOMAIN)
+        try:
+            await (await async_get_integration(hass, DOMAIN)).async_get_component()
+        except Exception as err:
+            # This handler stays registered, so the action works again once the code is fixed.
+            raise HomeAssistantError(f"{DOMAIN} is unloaded: the new code did not load ({err}). "
+                                     f"Fix it and call {DOMAIN}.reload_code again") from err
+        failed = [e.title for e in entries if not await hass.config_entries.async_setup(e.entry_id)]
+        if failed:
+            raise HomeAssistantError(f"{DOMAIN} did not set up again for {failed}; see the log")
+
+    async_register_admin_service(hass, DOMAIN, "reload_code", _reload_code)
