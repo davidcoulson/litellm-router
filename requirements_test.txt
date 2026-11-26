@@ -1,2 +1,4 @@
+# The tests call DeviceRegistry.async_get_device_by_identifier, new in Home Assistant 2026.8 (Python 3.14.2+).
+# The floor stops the resolver from silently picking an older Home Assistant.
 pytest-homeassistant-custom-component
-pycares<4.9
+homeassistant>=2026.8.0
