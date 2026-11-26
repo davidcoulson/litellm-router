@@ -78,10 +78,11 @@ credential-like query values, including backend `api_base`) are stripped everywh
 
 ## Development
 
+The integration runs on Home Assistant 2025.8.0 or newer. The tests need Home Assistant 2026.8 or newer, and so
+Python 3.14.2 or newer:
+
 ```
-uv venv ~/venvs/litellm-router --python 3.13
-uv pip install --python ~/venvs/litellm-router/bin/python -r requirements_test.txt
-~/venvs/litellm-router/bin/python -m pytest
+uv run --no-project --python 3.14 --with-requirements requirements_test.txt pytest -q
 ```
 
 ## Credits
