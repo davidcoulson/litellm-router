@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 

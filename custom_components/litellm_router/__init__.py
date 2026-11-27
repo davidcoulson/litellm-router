@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, field
 import importlib
 import importlib.util
+import json
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -79,6 +81,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LiteLLMConfigEntry) -> b
     entry.async_on_unload(hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _device_registry_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _register_reload_code(hass)
+    _clear_marketplace_restart(hass)
     return True
 
 
@@ -173,16 +176,24 @@ def _register_reload_code(hass: HomeAssistant) -> None:
         failed = [e.title for e in entries if not await hass.config_entries.async_setup(e.entry_id)]
         if failed:
             raise HomeAssistantError(f"{DOMAIN} did not set up again for {failed}; see the log")
-        _clear_marketplace_restart(hass)
 
     async_register_admin_service(hass, DOMAIN, "reload_code", _reload_code)
 
 
-def _clear_marketplace_restart(hass) -> None:
-    """Drop Marketplace's "restart to finish the update" repairs for LiteLLM Router.
+_CODE_VERSION = json.loads((Path(__file__).parent / "manifest.json").read_text())["version"]
 
-    Marketplace cannot see reload_code, so they would stay until a restart.
+
+def _clear_marketplace_restart(hass) -> None:
+    """Drop Marketplace's "restart to finish the update" repair for the running LiteLLM Router version.
+
+    Called from entry setup, so it uses the new code's version even when the old handler did
+    the reload; a repair for any other version still waits.
     """
     for (domain, issue_id), issue in list(ir.async_get(hass).issues.items()):
-        if domain == "marketplace" and issue_id.startswith("restart_required_") and issue.issue_domain == DOMAIN:
+        if (
+            domain == "marketplace"
+            and issue_id.startswith("restart_required_")
+            and issue.issue_domain == DOMAIN
+            and issue_id.rsplit("/", 1)[-1].removeprefix("v") == _CODE_VERSION
+        ):
             ir.async_delete_issue(hass, domain, issue_id)
