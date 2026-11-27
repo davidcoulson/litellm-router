@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 import logging
 import time
-from collections import defaultdict
-from dataclasses import dataclass, field
 from typing import Any
+from dataclasses import dataclass, field
 
 from .api import Topology
 from .const import IDLE
