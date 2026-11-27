@@ -1,10 +1,14 @@
 """litellm_router.reload_code: unload, re-import the modules from disk, set up again."""
 
+import json
 import sys
+from pathlib import Path
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.helpers import issue_registry as ir
 
+from custom_components import litellm_router
 from custom_components.litellm_router.const import DOMAIN
 
 from .conftest import LOCAL, metrics_text, mock_proxy, req
@@ -38,3 +42,33 @@ async def test_reload_code_replaces_the_modules(hass, aioclient_mock, entry) -> 
     assert hass.services.has_service(DOMAIN, "reload_code")
     assert type(entry.runtime_data) is sys.modules[PACKAGE].LiteLLMRuntimeData
     assert type(entry.runtime_data) is not old[PACKAGE].LiteLLMRuntimeData
+
+
+async def test_reload_clears_only_marketplaces_running_version_repairs(hass, monkeypatch):
+    mod = litellm_router
+    monkeypatch.setattr(mod, "_CODE_VERSION", "1.2.3")
+    for domain, issue_id, issue_domain in (
+        ("marketplace", "restart_required_1_tags/1.2.3", "litellm_router"),
+        ("marketplace", "restart_required_2_tags/v1.2.3", "litellm_router"),
+        ("marketplace", "restart_required_3_tags/1.2.4", "litellm_router"),
+        ("marketplace", "restart_required_4_tags/1.2.3", "ssh"),
+        ("marketplace", "critical_x/1.2.3", "litellm_router"),
+        ("litellm_router", "restart_required_x/1.2.3", "litellm_router"),
+    ):
+        ir.async_create_issue(
+            hass, domain, issue_id, is_fixable=False, issue_domain=issue_domain,
+            severity=ir.IssueSeverity.WARNING, translation_key="x",
+        )
+    mod._clear_marketplace_restart(hass)
+    assert set(ir.async_get(hass).issues) == {
+        ("marketplace", "restart_required_3_tags/1.2.4"),
+        ("marketplace", "restart_required_4_tags/1.2.3"),
+        ("marketplace", "critical_x/1.2.3"),
+        ("litellm_router", "restart_required_x/1.2.3"),
+    }
+
+
+def test_code_version_is_the_manifest_version():
+    mod = litellm_router
+    manifest = json.loads((Path(mod.__file__).parent / "manifest.json").read_text())
+    assert mod._CODE_VERSION == manifest["version"]
